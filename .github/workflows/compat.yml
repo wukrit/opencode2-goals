@@ -1,0 +1,28 @@
+name: Host compatibility
+
+# Weekly float check against the host: resolve the latest @opencode/plugin 2.x
+# on top of the lockfile, then re-run typecheck and tests. The pinned devDep
+# (2.0.15) is what we develop against; this job is what tells us when the host's
+# type surface or documented event taxonomy drifts before users hit it.
+# Fails the run only — notifications are GitHub's default watch settings.
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Mondays 14:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Float @opencode/plugin to latest 2.x
+        run: bun add -d "@opencode/plugin@^2.0.0"
+      - run: bun run typecheck
+      - run: bun test

@@ -74,8 +74,11 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 
 ## Requirements
 
-- OpenCode v2 (`@opencode/plugin` 2.x). Built and live-verified against
-  **2.0.15/2.0.16** (npm install, directory install, and the TUI widget).
+- OpenCode v2 (`@opencode/plugin` 2.x). Built and live-verified on
+  **2.0.15/2.0.16** (npm install, directory install, and the TUI widget); the
+  type surface and event model are re-checked against the **latest 2.x weekly**
+  in CI ([Host compatibility](.github/workflows/compat.yml) — run it manually
+  any time with `gh workflow run compat.yml`).
 - Bun, for tests, typecheck, and building the widget entry.
 
 ## Install
