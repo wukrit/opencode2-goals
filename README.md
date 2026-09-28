@@ -23,7 +23,7 @@ progress widget in the sidebar.
 | `/goal pause` / `/goal resume` | Halt or re-arm continuation without losing state. |
 | `/goal complete <evidence>` / `/goal block <reason>` | Terminal outcomes, same gates as the tools below. |
 | `/goal clear` | Remove the goal (archived first — see Durability). |
-| `/goal task add <title>` / `/goal task <n> todo\|doing\|done` | Drive the task breakdown from the keyboard (either order: `task 1 done` or `task done 1`). |
+| `/goal task add <title>` / `/goal task <n> todo\|doing\|done\|blocked` | Drive the task breakdown from the keyboard (either order: `task 1 done` or `task done 1`). `task add` takes `--depends 1,2 --acceptance "..." --verify "..."`; `doing`/`done` wait on deps. |
 | `/goal history` | Every terminal or superseded goal this session produced (`log` is an alias). |
 
 Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
@@ -38,7 +38,7 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 | `goal_complete(evidence)` | Evidence ≥24 chars with a checkable anchor (path, number, test result), grounded in transcript tokens when history is available. Weak claims are rejected; the goal stays `active`. |
 | `goal_block(reason)` | Requires a specific reason; the sanctioned "I can't proceed" exit. |
 | `goal_clear(request)` | Must quote the user's own clearing ask, grounded against **non-assistant** transcript text — assistant prose can't launder it, and no transcript fails closed. |
-| `goal_add_task(title)` / `goal_update_task(ref, status)` | None (active goal required); the widget stays in sync. |
+| `goal_add_task(title, depends?, acceptance?, verify?)` / `goal_update_task(ref, status, note?, evidence?)` | Statuses `todo`/`doing`/`done`/`blocked` (active goal required); `doing`/`done` need deps done first, past-7-nodes warns; the widget stays in sync. |
 | `goal_history()` | Read-only. |
 
 ### The loop
@@ -246,6 +246,7 @@ src/
   controller.ts     # the goal loop (commands, tools, hooks, events, permission sandbox, goal archive)
   state.ts          # durable goal record + tasks + pure transitions + archive keys
   command.ts        # /goal parsing (caps, --unbounded, tasks, history) + status formatting
+  graph.ts          # pure task-DAG helpers: dep validation/cycles, readyTasks, parallel groups
   rpc.ts            # goals.get / goals.updated for the widget (import-free)
   tui.tsx           # sidebar progress widget source (pre-compiled to dist/tui.js, the ./tui export)
   evidence.ts       # completion-evidence gate + user-request gate for goal_clear

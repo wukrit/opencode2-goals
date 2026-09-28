@@ -24,7 +24,7 @@ export type GoalCap = {
   tokens?: number
 }
 
-export type GoalTaskStatus = "todo" | "doing" | "done"
+export type GoalTaskStatus = "todo" | "doing" | "done" | "blocked"
 
 export type GoalTask = {
   id: string
@@ -32,6 +32,16 @@ export type GoalTask = {
   status: GoalTaskStatus
   createdAt: number
   updatedAt: number
+  /** Ids of tasks that must be `done` before this one can start. Empty = ready. */
+  depends: string[]
+  /** Checkable acceptance criteria for the node (optional, ≤200 chars). */
+  acceptance?: string
+  /** Verification command(s) for the node (optional). */
+  verify?: string
+  /** Evidence recorded when the node completes (optional; feeds verdict gating). */
+  evidence?: string
+  /** Reason string when `blocked`, or a waiting note otherwise (optional). */
+  note?: string
 }
 
 export type GoalRecord = {
@@ -132,6 +142,19 @@ export function normalizeGoal(goal: GoalRecord): GoalRecord {
   if (!Array.isArray((goal as { tasks?: unknown }).tasks)) {
     goal.tasks = []
   }
+  // Backfill DAG fields for tasks written before them (issue #5).
+  for (const task of goal.tasks) {
+    if (!Array.isArray((task as { depends?: unknown }).depends)) {
+      task.depends = []
+    } else {
+      // Drop dangling dep ids left by older writes; ordering is advisory.
+      const ids = new Set(goal.tasks.map((t) => t.id))
+      task.depends = task.depends.filter((id) => typeof id === "string" && ids.has(id) && id !== task.id)
+    }
+    if (task.status !== "todo" && task.status !== "doing" && task.status !== "done" && task.status !== "blocked") {
+      task.status = "todo"
+    }
+  }
   return goal
 }
 
@@ -141,12 +164,27 @@ export function nextTaskID(now: number = Date.now()): string {
   return `t_${now.toString(36)}_${taskCounter.toString(36)}`
 }
 
-export function taskCounts(tasks: readonly GoalTask[]): { total: number; done: number; doing: number; todo: number } {
+export function resolveTaskRef(
+  tasks: readonly { id: string }[],
+  ref: string,
+): number {
+  const trimmed = (ref ?? "").trim()
+  if (!trimmed) return -1
+  const asIndex = Number(trimmed)
+  if (Number.isInteger(asIndex) && asIndex >= 1 && asIndex <= tasks.length) return asIndex - 1
+  const lower = trimmed.toLowerCase()
+  const byId = tasks.findIndex((t) => t.id.toLowerCase() === lower || t.id.toLowerCase().endsWith(lower))
+  return byId
+}
+
+export function taskCounts(tasks: readonly GoalTask[]): { total: number; done: number; doing: number; blocked: number; todo: number } {
   let done = 0
   let doing = 0
+  let blocked = 0
   for (const t of tasks) {
     if (t.status === "done") done++
     else if (t.status === "doing") doing++
+    else if (t.status === "blocked") blocked++
   }
-  return { total: tasks.length, done, doing, todo: tasks.length - done - doing }
+  return { total: tasks.length, done, doing, blocked, todo: tasks.length - done - doing - blocked }
 }

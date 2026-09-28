@@ -24,8 +24,9 @@
  *   continuation. Pause/clear make the record non-active, which also stops it.
  */
 
-import { formatGoal, formatGoalHistory, parseGoalCommand, resolveTaskRef, type GoalCommand } from "./command"
+import { formatGoal, formatGoalHistory, parseGoalCommand, type GoalCommand } from "./command"
 import { validateClearRequest, validateEvidence } from "./evidence"
+import { unmetDeps, resolveDepends, SOFT_NODE_WARN_COUNT, taskNumber, validateDepends } from "./graph"
 import { resolveOptions, type Options } from "./options"
 import { decidePermission } from "./permission"
 import {
@@ -38,8 +39,10 @@ import {
   isTerminal,
   nextTaskID,
   normalizeGoal,
+  resolveTaskRef,
   type GoalCap,
   type GoalRecord,
+  type GoalTask,
   type GoalTaskStatus,
 } from "./state"
 import type {
@@ -165,11 +168,14 @@ export class GoalController {
       editor.add({
         name: "goal_add_task",
         description:
-          "Add a task to the active goal's breakdown so the progress widget can track it. Keep titles short and concrete.",
+          "Add a task to the active goal's breakdown so the progress widget can track it. Keep titles short and concrete. Optional DAG fields: depends (1-based numbers like '1,2'), acceptance (checkable criteria), verify (command).",
         input: {
           type: "object",
           properties: {
             title: { type: "string", description: "Short task title." },
+            depends: { type: "string", description: "Comma-separated 1-based task numbers this task waits on, e.g. '1,2'." },
+            acceptance: { type: "string", description: "Checkable acceptance criteria for the node." },
+            verify: { type: "string", description: "Verification command(s) for the node." },
           },
           required: ["title"],
           additionalProperties: false,
@@ -178,12 +184,15 @@ export class GoalController {
       })
       editor.add({
         name: "goal_update_task",
-        description: "Update a task's status (todo, doing, done). Refer by 1-based number or task id.",
+        description:
+          "Update a task's status (todo, doing, done, blocked). Refer by 1-based number or task id. doing/done require deps done first; blocked takes an optional note, done an optional evidence string.",
         input: {
           type: "object",
           properties: {
             ref: { type: "string", description: "Task number (1-based) or id." },
-            status: { type: "string", description: "todo, doing, or done." },
+            status: { type: "string", description: "todo, doing, done, or blocked." },
+            note: { type: "string", description: "Reason when blocked (optional)." },
+            evidence: { type: "string", description: "Completion evidence for the node (optional)." },
           },
           required: ["ref", "status"],
           additionalProperties: false,
@@ -423,9 +432,26 @@ export class GoalController {
           await this.notify(sessionID, "Nothing to add: provide a title, e.g. `/goal task add Write tests`.")
           return
         }
-        const task = this.addTask(goal, title)
+        if (goal.tasks.length >= 50) {
+          await this.notify(sessionID, "Task NOT added: task limit (50) reached.")
+          return
+        }
+        const resolved = resolveDepends(goal.tasks, command.depends)
+        if ("error" in resolved) {
+          await this.notify(sessionID, resolved.error)
+          return
+        }
+        const task = this.addTask(goal, title, {
+          depends: resolved.ids,
+          acceptance: command.acceptance,
+          verify: command.verify,
+        })
+        if ("error" in task) {
+          await this.notify(sessionID, task.error)
+          return
+        }
         await this.save(goal)
-        await this.notify(sessionID, `Task ${goal.tasks.length} added: ${task.title}`)
+        await this.notify(sessionID, this.taskAddedNotice(goal, task.id))
         return
       }
       case "taskUpdate": {
@@ -436,6 +462,11 @@ export class GoalController {
         const index = resolveTaskRef(goal.tasks, command.ref)
         if (index < 0) {
           await this.notify(sessionID, `No such task: ${command.ref || "(empty)"}. See /goal view for numbers.`)
+          return
+        }
+        const readiness = this.readinessRejection(goal, index, command.status)
+        if (readiness) {
+          await this.notify(sessionID, readiness)
           return
         }
         goal.tasks[index]!.status = command.status
@@ -525,11 +556,49 @@ export class GoalController {
     return { content: `Goal ${goal.id} cleared per user request: "${request}". Continuation is halted.` }
   }
 
-  private addTask(goal: GoalRecord, title: string): { id: string; title: string } {
+  private addTask(
+    goal: GoalRecord,
+    title: string,
+    opts?: { depends?: string[]; acceptance?: string; verify?: string },
+  ): GoalTask | { error: string } {
     const now = Date.now()
-    const task = { id: nextTaskID(now), title: title.slice(0, 200), status: "todo" as GoalTaskStatus, createdAt: now, updatedAt: now }
+    const id = nextTaskID(now)
+    const depends = opts?.depends ?? []
+    const invalid = validateDepends(goal.tasks, id, depends)
+    if (invalid) return { error: invalid }
+    const task: GoalTask = {
+      id,
+      title: title.slice(0, 200),
+      status: "todo",
+      createdAt: now,
+      updatedAt: now,
+      depends,
+    }
+    if (opts?.acceptance?.trim()) task.acceptance = opts.acceptance.trim().slice(0, 200)
+    if (opts?.verify?.trim()) task.verify = opts.verify.trim().slice(0, 200)
     goal.tasks.push(task)
     return task
+  }
+
+  /** Notice for a fresh task; warns (never rejects) past the soft node budget. */
+  private taskAddedNotice(goal: GoalRecord, id: string): string {
+    const index = goal.tasks.findIndex((t) => t.id === id)
+    const task = goal.tasks[index]!
+    let notice = `Task ${index + 1} added: ${task.title}`
+    if (goal.tasks.length === SOFT_NODE_WARN_COUNT + 1) {
+      notice += ` (past ${SOFT_NODE_WARN_COUNT} nodes — consider splitting this run; see /goal view)`
+    }
+    return notice
+  }
+
+  /** Reject `doing`/`done` while deps are unmet; everything else is always legal. */
+  private readinessRejection(goal: GoalRecord, index: number, status: GoalTaskStatus): string | undefined {
+    if (status !== "doing" && status !== "done") return undefined
+    const task = goal.tasks[index]!
+    const unmet = unmetDeps(task, goal.tasks)
+    if (unmet.length === 0) return undefined
+    const names = unmet.map((id) => taskNumber(goal.tasks, id)).join(", ")
+    return `Task ${index + 1} waits on ${names} — mark ${names} done first, or blocked with a note.`
   }
 
   async onGoalAddTask(input: Record<string, unknown>, context: ToolContext): Promise<{ content: string }> {
@@ -538,23 +607,42 @@ export class GoalController {
     const goal = await this.load(context.sessionID)
     if (!goal || goal.status !== "active") return { content: "No active goal to add a task to." }
     if (goal.tasks.length >= 50) return { content: "Task NOT added: task limit (50) reached." }
-    const task = this.addTask(goal, title)
+    const rawDepends = input?.depends
+    const resolved = resolveDepends(
+      goal.tasks,
+      rawDepends === undefined ? undefined : Array.isArray(rawDepends) ? rawDepends.map(String) : String(rawDepends),
+    )
+    if ("error" in resolved) return { content: resolved.error }
+    const task = this.addTask(goal, title, {
+      depends: resolved.ids,
+      acceptance: typeof input?.acceptance === "string" ? input.acceptance : undefined,
+      verify: typeof input?.verify === "string" ? input.verify : undefined,
+    })
+    if ("error" in task) return { content: task.error }
     await this.save(goal)
-    return { content: `Task ${goal.tasks.length} added (${task.id}): ${task.title}` }
+    return { content: `${this.taskAddedNotice(goal, task.id)} (${task.id})` }
   }
 
   async onGoalUpdateTask(input: Record<string, unknown>, context: ToolContext): Promise<{ content: string }> {
     const ref = String(input?.ref ?? input?.id ?? input?.taskId ?? "").trim()
     const rawStatus = String(input?.status ?? "").trim().toLowerCase()
-    if (rawStatus !== "todo" && rawStatus !== "doing" && rawStatus !== "done") {
-      return { content: "Task NOT updated: `status` must be todo, doing, or done." }
+    if (rawStatus !== "todo" && rawStatus !== "doing" && rawStatus !== "done" && rawStatus !== "blocked") {
+      return { content: "Task NOT updated: `status` must be todo, doing, done, or blocked." }
     }
     const goal = await this.load(context.sessionID)
     if (!goal || goal.status !== "active") return { content: "No active goal to update." }
     const index = resolveTaskRef(goal.tasks, ref)
     if (index < 0) return { content: `Task NOT updated: no such task ${ref || "(empty)"}.` }
+    const readiness = this.readinessRejection(goal, index, rawStatus as GoalTaskStatus)
+    if (readiness) return { content: `Task NOT updated: ${readiness}` }
     goal.tasks[index]!.status = rawStatus as GoalTaskStatus
     goal.tasks[index]!.updatedAt = Date.now()
+    if (typeof input?.note === "string" && input.note.trim()) {
+      goal.tasks[index]!.note = input.note.trim().slice(0, 200)
+    }
+    if (typeof input?.evidence === "string" && input.evidence.trim()) {
+      goal.tasks[index]!.evidence = input.evidence.trim().slice(0, 500)
+    }
     await this.save(goal)
     return { content: `Task ${index + 1} marked ${rawStatus}: ${goal.tasks[index]!.title}` }
   }
@@ -575,7 +663,7 @@ export class GoalController {
       `Objective: ${goal.objective}`,
       `Continuation turns used: ${goal.used.turns}${capText}.`,
       "Work autonomously toward this objective. Prefer concrete actions over narration.",
-      "Keep the task breakdown current: call goal_add_task(title) to plan, goal_update_task(ref, status) with todo/doing/done as work progresses.",
+      "Keep the task breakdown current: call goal_add_task(title, depends?, acceptance?, verify?) to plan, goal_update_task(ref, status) with todo/doing/done/blocked as work progresses (doing/done need deps done first).",
       "Prior goals in this session are archived: call goal_history() to review their outcomes before starting new work.",
       "Call goal_complete(evidence) only when the finish condition is verifiably met; the evidence must be concrete, independently checkable, and grounded in this session's observed work (file path, test result, or command output, at least 24 chars). Weak or generic evidence will be rejected and the goal will stay active.",
       "Call goal_block(reason) if you cannot proceed, including when a file or directory you need is outside the session working directory and access is denied.",

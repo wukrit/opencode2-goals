@@ -7,6 +7,19 @@ are extracted from the matching section of this file by the release workflow.
 
 ## [Unreleased]
 
+### Added
+- Goal tasks are a DAG (issue #5, Graph-aware goals milestone): `depends`
+  (ordering edges), `acceptance`, `verify`, per-node `evidence`, `note`, and
+  an explicit `blocked` status. `goal_add_task` takes `depends`/`acceptance`/
+  `verify`; `goal_update_task` takes `todo`/`doing`/`done`/`blocked` plus
+  optional `note`/`evidence`. `doing`/`done` are rejected while deps are
+  unmet; new pure helpers live in `src/graph.ts` (cycle-checked validation,
+  `readyTasks`, topological parallel groups). `/goal task add` accepts
+  `--depends 1,2 --acceptance "..." --verify "..."`; `/goal view` and the
+  sidebar widget render dep edges (`← after 1`), node fields, and parallel
+  groups. Old records normalize (`depends: []`); loop behavior without deps
+  is unchanged.
+
 ## [1.0.4] - 2026-09-28
 
 ### Added
