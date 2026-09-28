@@ -131,6 +131,12 @@ function GoalWidget(props: { sessionID: string }) {
                 <text fg={context.theme.text.base}>{"Status:".padEnd(8)}</text>
                 <text fg={ink(statusColor())}>{goal().status}</text>
               </box>
+              <Show when={goal().graph?.mode === "graph"}>
+                <box flexDirection="row">
+                  <text fg={context.theme.text.base}>{"Phase:".padEnd(8)}</text>
+                  <text fg={context.theme.text.base}>{goal().graph?.phase}</text>
+                </box>
+              </Show>
               <For each={counterRows()}>
                 {(line) => <text fg={context.theme.text.base}>{line}</text>}
               </For>
@@ -143,12 +149,26 @@ function GoalWidget(props: { sessionID: string }) {
             <Show when={tasks().length > 0}>
               <box flexDirection="column" marginTop={1}>
                 <For each={tasks().slice(0, 6)}>
-                  {(task, i) => (
+                  {(task, i) => {
+                    const depNums = (task.depends ?? [])
+                      .map((id) => tasks().findIndex((t) => t.id === id) + 1)
+                      .filter((n) => n > 0)
+                    const depsSuffix = depNums.length > 0 ? ` ← ${depNums.join(",")}` : ""
                     // Done tasks keep base text; ✔ carries the signal.
-                    <text fg={task.status === "doing" ? ink(context.theme.text.warning) : context.theme.text.base} wrapMode="word">
-                      {task.status === "done" ? "✔" : task.status === "doing" ? "›" : "·"} {i() + 1}. {task.title}
-                    </text>
-                  )}
+                    const icon = task.status === "done" ? "✔" : task.status === "doing" ? "›" : task.status === "blocked" ? "!" : "·"
+                    const fg =
+                      task.status === "doing"
+                        ? ink(context.theme.text.warning)
+                        : task.status === "blocked"
+                          ? ink(context.theme.text.error)
+                          : context.theme.text.base
+                    return (
+                      <text fg={fg} wrapMode="word">
+                        {icon} {i() + 1}. {task.title}
+                        {depsSuffix}
+                      </text>
+                    )
+                  }}
                 </For>
                 <Show when={tasks().length > 6}>
                   <text fg={context.theme.text.muted}>+{tasks().length - 6} more · /goal view</text>

@@ -19,11 +19,12 @@ progress widget in the sidebar.
 | Command | Effect |
 | --- | --- |
 | `/goal set <objective> [--turns N] [--tokens N] [--unbounded]` | Start the loop. No flags = **10-turn / 100,000-token cap**; `--unbounded` (also `--no-cap`, `--unlimited`) opts out of numeric limits. |
+| `/goal set <objective> --graph <issue>` | Start in graph-orchestrator mode for a detected repo graph (refused when none is found; `--no-graph` forces loop). |
 | `/goal view` | Full state: status, budget usage, tasks, evidence, outcome. |
 | `/goal pause` / `/goal resume` | Halt or re-arm continuation without losing state. |
 | `/goal complete <evidence>` / `/goal block <reason>` | Terminal outcomes, same gates as the tools below. |
 | `/goal clear` | Remove the goal (archived first — see Durability). |
-| `/goal task add <title>` / `/goal task <n> todo\|doing\|done` | Drive the task breakdown from the keyboard (either order: `task 1 done` or `task done 1`). |
+| `/goal task add <title>` / `/goal task <n> todo\|doing\|done\|blocked` | Drive the task breakdown from the keyboard (either order: `task 1 done` or `task done 1`). `task add` takes `--depends 1,2 --acceptance "..." --verify "..."`; `doing`/`done` wait on deps. |
 | `/goal history` | Every terminal or superseded goal this session produced (`log` is an alias). |
 
 Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
@@ -34,11 +35,11 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 
 | Tool | Gate |
 | --- | --- |
-| `goal_set(objective, turns?, tokens?, unbounded?)` | Refuses while a non-terminal goal exists — the model can't clobber yours, and cap defaults match `/goal set`. |
-| `goal_complete(evidence)` | Evidence ≥24 chars with a checkable anchor (path, number, test result), grounded in transcript tokens when history is available. Weak claims are rejected; the goal stays `active`. |
+| `goal_set(objective, turns?, tokens?, unbounded?, graph?)` | Refuses while a non-terminal goal exists — the model can't clobber yours, and cap defaults match `/goal set`. `graph` (issue number/URL) switches to orchestrator mode when a repo graph is detected. |
+| `goal_complete(evidence)` | Evidence ≥24 chars with a checkable anchor (path, number, test result), grounded in transcript tokens when history is available. In graph mode the evidence must cite the run's `verdict.md`, which is re-parsed (pass, green gate, zero P1, all nodes proven) or the completion is explicitly tagged unverified. Weak claims are rejected; the goal stays `active`. |
 | `goal_block(reason)` | Requires a specific reason; the sanctioned "I can't proceed" exit. |
 | `goal_clear(request)` | Must quote the user's own clearing ask, grounded against **non-assistant** transcript text — assistant prose can't launder it, and no transcript fails closed. |
-| `goal_add_task(title)` / `goal_update_task(ref, status)` | None (active goal required); the widget stays in sync. |
+| `goal_add_task(title, depends?, acceptance?, verify?)` / `goal_update_task(ref, status, note?, evidence?)` | Statuses `todo`/`doing`/`done`/`blocked` (active goal required); `doing`/`done` need deps done first, past-7-nodes warns; the widget stays in sync. |
 | `goal_history()` | Read-only. |
 
 ### The loop
@@ -52,6 +53,13 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 - A continuation that makes no tool call counts as a **stall**; reaching a
   cap produces the distinct `budget_limited` outcome — neither completion
   nor blocked.
+- Graph-mode turns route through the failure policy first (issue #7): verdict
+  pass → publish, fail + budget → one remediation requeue, spent budget /
+  worker-blocked / ambiguity → `blocked` with branch and artifacts named.
+  Caps stay hard budgets; unrecognized turns fall through to the loop path.
+- Graph mode (`--graph`) is orchestrator discipline plus repo conventions —
+  the decision rule, lifecycle, knowledge-graph convention, fallback role
+  prompts, and tuning live in [`docs/graph-cookbook.md`](docs/graph-cookbook.md).
 
 ### Durability
 
@@ -123,14 +131,21 @@ With options (all optional):
     "stallLimit": 1,
     "defaultCapTurns": 10,
     "defaultCapTokens": 100000,
-    "continuationText": "Continue the goal. End the turn with a tool call."
+    "continuationText": "Continue the goal. End the turn with a tool call.",
+    "graph": { "mode": "auto", "command": "graph-run", "agents": ["graph-planner", "graph-worker", "graph-verifier"], "maxRemediations": 1 }
   }
 }
 ```
 
 `continuationText` replaces the default continuation prompt (the message
 injected at each turn boundary); the other options set the stall tolerance and
-the default caps that `/goal set` applies when no flags are given.
+the default caps that `/goal set` applies when no flags are given. `graph`
+configures repo-graph orchestration (issue #4): `mode: "auto"` uses a detected
+graph when the goal opts in (`--graph` / `graph` param), `"off"` never does;
+`command`/`agents` name the expected orchestrator command and role agents
+(registry first, `.opencode` files as fallback); `maxRemediations` is stored
+for the failure-policy routing in #7. Loop stays the default — graph is
+always an explicit opt-in per run.
 
 Then reload locations:
 
@@ -245,10 +260,13 @@ tui.tsx             # top-level TUI shim (re-exports src/tui.tsx for directory-i
 src/
   controller.ts     # the goal loop (commands, tools, hooks, events, permission sandbox, goal archive)
   state.ts          # durable goal record + tasks + pure transitions + archive keys
-  command.ts        # /goal parsing (caps, --unbounded, tasks, history) + status formatting
+  command.ts        # /goal parsing (caps, --unbounded, --graph, tasks, history) + status formatting
+  detect.ts         # repo-graph detection: agent/command registry first, .opencode fs fallback
+  graph.ts          # pure task-DAG helpers: dep validation/cycles, readyTasks, parallel groups; failure-policy router (routeGraphSignal, AMBIGUITY_MARKER)
   rpc.ts            # goals.get / goals.updated for the widget (import-free)
   tui.tsx           # sidebar progress widget source (pre-compiled to dist/tui.js, the ./tui export)
   evidence.ts       # completion-evidence gate + user-request gate for goal_clear
+  verdict.ts          # verdict.md parser + capped reads for graph-mode completion gating
   permission.ts     # path sandbox (decidePermission, fail-closed containment)
   options.ts        # plugin options (stallLimit, continuationText, defaultCapTurns/Tokens)
   types.ts          # structural slice of the plugin context

@@ -121,6 +121,10 @@ export type PermissionEvaluation = {
 export type PluginContext = {
   options?: Record<string, unknown>
   location?: { directory?: string; project?: { id?: string } }
+  /** Agent registry (newer hosts). Absent on older builds: detection falls back to fs. */
+  agent?: {
+    list(): Promise<readonly { id?: string; name?: string }[]>
+  }
   rpc?: {
     register(
       definition: unknown,
@@ -156,6 +160,8 @@ export type PluginContext = {
   }
   command: {
     transform(callback: (editor: CommandEditor) => void): Promise<Registration>
+    /** Command registry read (newer hosts). Absent on older builds. */
+    list?(): Promise<readonly { name?: string }[]>
   }
   tool: {
     transform(callback: (editor: ToolEditor) => void): Promise<Registration>

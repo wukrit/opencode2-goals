@@ -11,7 +11,7 @@ import type { GoalRecord } from "./state"
 
 export type GoalSnapshot = Pick<
   GoalRecord,
-  "id" | "sessionID" | "objective" | "status" | "cap" | "used" | "stalls" | "continuations" | "tasks" | "evidence" | "blocker" | "outcome" | "updatedAt"
+  "id" | "sessionID" | "objective" | "status" | "cap" | "used" | "stalls" | "continuations" | "tasks" | "evidence" | "blocker" | "outcome" | "updatedAt" | "graph"
 >
 
 export function toSnapshot(goal: GoalRecord): GoalSnapshot {
@@ -30,6 +30,7 @@ export function toSnapshot(goal: GoalRecord): GoalSnapshot {
   if (goal.evidence !== undefined) snapshot.evidence = goal.evidence
   if (goal.blocker !== undefined) snapshot.blocker = goal.blocker
   if (goal.outcome !== undefined) snapshot.outcome = goal.outcome
+  if (goal.graph !== undefined) snapshot.graph = goal.graph
   return snapshot
 }
 
@@ -52,6 +53,7 @@ const snapshotSchema = {
     stalls: { type: "number" },
     continuations: { type: "number" },
     tasks: { type: "array" },
+    graph: { type: "object" },
     evidence: { type: "string" },
     blocker: { type: "string" },
     outcome: { type: "string" },

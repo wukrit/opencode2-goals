@@ -24,8 +24,12 @@
  *   continuation. Pause/clear make the record non-active, which also stops it.
  */
 
-import { formatGoal, formatGoalHistory, parseGoalCommand, resolveTaskRef, type GoalCommand } from "./command"
+import { formatGoal, formatGoalHistory, parseGoalCommand, type GoalCommand } from "./command"
+import { detectGraph } from "./detect"
 import { validateClearRequest, validateEvidence } from "./evidence"
+import { isPathInside } from "./permission"
+import { parseVerdict, readVerdictFile, artifactExists, consumeArtifact } from "./verdict"
+import { AMBIGUITY_MARKER, unmetDeps, resolveDepends, routeGraphSignal, SOFT_NODE_WARN_COUNT, taskNumber, validateDepends, type GraphSignal } from "./graph"
 import { resolveOptions, type Options } from "./options"
 import { decidePermission } from "./permission"
 import {
@@ -37,9 +41,13 @@ import {
   isCapReached,
   isTerminal,
   nextTaskID,
+  nextGraphPhase,
   normalizeGoal,
+  resolveTaskRef,
   type GoalCap,
+  type GoalGraph,
   type GoalRecord,
+  type GoalTask,
   type GoalTaskStatus,
 } from "./state"
 import type {
@@ -94,7 +102,7 @@ export class GoalController {
       editor.add({
         name: "goal_set",
         description:
-          "Set the active goal for this session and start the continuation loop. Use only when the user explicitly asks you to set a goal. Refuses while a non-terminal goal is active — finish it with goal_complete/goal_block first.",
+          "Set the active goal for this session and start the continuation loop. Use only when the user explicitly asks you to set a goal. Refuses while a non-terminal goal is active — finish it with goal_complete/goal_block first. Pass `graph` (issue number/URL) to orchestrate a detected repo graph instead of looping.",
         input: {
           type: "object",
           properties: {
@@ -102,6 +110,7 @@ export class GoalController {
             turns: { type: "number", description: "Optional continuation-turn cap (default: configured cap)." },
             tokens: { type: "number", description: "Optional token cap (default: configured cap)." },
             unbounded: { type: "boolean", description: "Opt out of caps entirely. Rarely right; prefer explicit caps." },
+            graph: { type: "string", description: "Issue number/URL to run through the repo's agent graph (refused when no graph is detected)." },
           },
           required: ["objective"],
           additionalProperties: false,
@@ -111,7 +120,7 @@ export class GoalController {
       editor.add({
         name: "goal_complete",
         description:
-          "Mark the active goal complete. Only call this when the goal's finish condition is verifiably met. Evidence must be concrete, independently checkable, and grounded in this session's observed work (file, test result, or command output, at least 24 chars).",
+          "Mark the active goal complete. Only call this when the goal's finish condition is verifiably met. Evidence must be concrete, independently checkable, and grounded in this session's observed work (file, test result, or command output, at least 24 chars). In graph mode the evidence must cite the run's verdict.md, which is re-parsed (pass, green gate, zero P1, all nodes proven).",
         input: {
           type: "object",
           properties: {
@@ -165,11 +174,14 @@ export class GoalController {
       editor.add({
         name: "goal_add_task",
         description:
-          "Add a task to the active goal's breakdown so the progress widget can track it. Keep titles short and concrete.",
+          "Add a task to the active goal's breakdown so the progress widget can track it. Keep titles short and concrete. Optional DAG fields: depends (1-based numbers like '1,2'), acceptance (checkable criteria), verify (command).",
         input: {
           type: "object",
           properties: {
             title: { type: "string", description: "Short task title." },
+            depends: { type: "string", description: "Comma-separated 1-based task numbers this task waits on, e.g. '1,2'." },
+            acceptance: { type: "string", description: "Checkable acceptance criteria for the node." },
+            verify: { type: "string", description: "Verification command(s) for the node." },
           },
           required: ["title"],
           additionalProperties: false,
@@ -178,12 +190,15 @@ export class GoalController {
       })
       editor.add({
         name: "goal_update_task",
-        description: "Update a task's status (todo, doing, done). Refer by 1-based number or task id.",
+        description:
+          "Update a task's status (todo, doing, done, blocked). Refer by 1-based number or task id. doing/done require deps done first; blocked takes an optional note, done an optional evidence string.",
         input: {
           type: "object",
           properties: {
             ref: { type: "string", description: "Task number (1-based) or id." },
-            status: { type: "string", description: "todo, doing, or done." },
+            status: { type: "string", description: "todo, doing, done, or blocked." },
+            note: { type: "string", description: "Reason when blocked (optional)." },
+            evidence: { type: "string", description: "Completion evidence for the node (optional)." },
           },
           required: ["ref", "status"],
           additionalProperties: false,
@@ -316,7 +331,14 @@ export class GoalController {
         if (goal && !isTerminal(goal.status)) {
           await this.archive(goal)
         }
+        let graphInit: GoalGraph | undefined
+        if (command.graph !== undefined) {
+          const started = await this.startGraphOrRefuse(sessionID, command.graph)
+          if (!started) return
+          graphInit = started
+        }
         const created = createGoal({ sessionID, objective: command.objective, cap })
+        if (graphInit) created.graph = graphInit
         await this.save(created)
         await this.injectContinuation(created)
         return
@@ -385,6 +407,16 @@ export class GoalController {
           await this.notify(sessionID, `Completion rejected: ${rejection}`)
           return
         }
+        if (goal.graph?.mode === "graph") {
+          const gated = await this.validateGraphEvidence(evidence, goal, sessionID)
+          if (gated.rejection) {
+            await this.notify(sessionID, `Completion rejected: ${gated.rejection}`)
+            return
+          }
+          if (gated.unverified) {
+            await this.notify(sessionID, `Unverified completion (model-attested only: ${gated.unverified}).`)
+          }
+        }
         goal.status = "completed"
         goal.outcome = "completed"
         goal.evidence = evidence
@@ -423,9 +455,26 @@ export class GoalController {
           await this.notify(sessionID, "Nothing to add: provide a title, e.g. `/goal task add Write tests`.")
           return
         }
-        const task = this.addTask(goal, title)
+        if (goal.tasks.length >= 50) {
+          await this.notify(sessionID, "Task NOT added: task limit (50) reached.")
+          return
+        }
+        const resolved = resolveDepends(goal.tasks, command.depends)
+        if ("error" in resolved) {
+          await this.notify(sessionID, resolved.error)
+          return
+        }
+        const task = this.addTask(goal, title, {
+          depends: resolved.ids,
+          acceptance: command.acceptance,
+          verify: command.verify,
+        })
+        if ("error" in task) {
+          await this.notify(sessionID, task.error)
+          return
+        }
         await this.save(goal)
-        await this.notify(sessionID, `Task ${goal.tasks.length} added: ${task.title}`)
+        await this.notify(sessionID, this.taskAddedNotice(goal, task.id))
         return
       }
       case "taskUpdate": {
@@ -436,6 +485,11 @@ export class GoalController {
         const index = resolveTaskRef(goal.tasks, command.ref)
         if (index < 0) {
           await this.notify(sessionID, `No such task: ${command.ref || "(empty)"}. See /goal view for numbers.`)
+          return
+        }
+        const readiness = this.readinessRejection(goal, index, command.status)
+        if (readiness) {
+          await this.notify(sessionID, readiness)
           return
         }
         goal.tasks[index]!.status = command.status
@@ -470,11 +524,17 @@ export class GoalController {
     const transcript = await this.transcriptForEvidence(context.sessionID)
     const rejection = validateEvidence(evidence, transcript)
     if (rejection) return { content: rejection }
+    let suffix = ""
+    if (goal.graph?.mode === "graph") {
+      const gated = await this.validateGraphEvidence(evidence, goal, context.sessionID)
+      if (gated.rejection) return { content: gated.rejection }
+      if (gated.unverified) suffix = ` (unverified — model-attested only: ${gated.unverified})`
+    }
     goal.status = "completed"
     goal.outcome = "completed"
     goal.evidence = evidence
     await this.save(goal)
-    return { content: `Goal ${goal.id} completed. Evidence recorded.` }
+    return { content: `Goal ${goal.id} completed. Evidence recorded.${suffix}` }
   }
 
   async onGoalSet(input: Record<string, unknown>, context: ToolContext): Promise<{ content: string }> {
@@ -489,10 +549,58 @@ export class GoalController {
     const turns = typeof input?.turns === "number" ? Math.max(1, Math.floor(input.turns)) : undefined
     const tokens = typeof input?.tokens === "number" ? Math.max(1, Math.floor(input.tokens)) : undefined
     const cap = this.effectiveCap({ kind: "set", objective, cap: { turns, tokens }, unbounded: input?.unbounded === true })
+    const graphRaw = input?.graph
+    let graphInit: GoalGraph | undefined
+    if (graphRaw !== undefined) {
+      const issue = graphRaw === true ? "" : String(graphRaw ?? "").trim()
+      const started = await this.startGraphOrRefuse(context.sessionID, issue)
+      if (!started) {
+        return {
+          content: `Goal NOT set: no repo graph detected (looked for ${this.options.graph.agents.join(", ")} + .opencode graph files). Drop \`graph\` for a loop goal, or add the repo graph first.`,
+        }
+      }
+      graphInit = started
+    }
     const created = createGoal({ sessionID: context.sessionID, objective, cap })
+    if (graphInit) created.graph = graphInit
     await this.save(created)
     await this.injectContinuation(created)
     return { content: `Goal ${created.id} set: ${created.objective} (cap: ${capSummary(created.cap)}).` }
+  }
+
+  /**
+   * Resolve a graph-mode request against detection. Returns the proposed
+   * `GoalGraph`, or undefined after notifying the refusal (explicit: never a
+   * silent downgrade to loop).
+   */
+  private async startGraphOrRefuse(sessionID: string, issue: string): Promise<GoalGraph | undefined> {
+    const detection = await detectGraph(this.ctx, this.options.graph)
+    if (!detection.present) {
+      await this.notify(
+        sessionID,
+        `Graph NOT started: no repo graph detected (looked for ${this.options.graph.agents.join(", ")} + .opencode graph files). ` +
+          `Retry without --graph for a loop goal, or add the repo graph first.`,
+      )
+      return undefined
+    }
+    const slug =
+      issue.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "no-issue"
+    const graph: GoalGraph = {
+      mode: "graph",
+      runId: `graph-${slug}-${Date.now().toString(36)}`,
+      issue: issue.trim(),
+      phase: "plan",
+      remediationsUsed: 0,
+      agents: detection.agents.length > 0 ? detection.agents : [...this.options.graph.agents],
+    }
+    if (detection.missing.length > 0) {
+      await this.notify(
+        sessionID,
+        `Graph mode with partial roles (missing: ${detection.missing.join(", ")}). ` +
+          `The orchestrator must work around the gap or escalate via goal_block — never guess.`,
+      )
+    }
+    return graph
   }
 
   async onGoalBlock(input: Record<string, unknown>, context: ToolContext): Promise<{ content: string }> {
@@ -525,11 +633,49 @@ export class GoalController {
     return { content: `Goal ${goal.id} cleared per user request: "${request}". Continuation is halted.` }
   }
 
-  private addTask(goal: GoalRecord, title: string): { id: string; title: string } {
+  private addTask(
+    goal: GoalRecord,
+    title: string,
+    opts?: { depends?: string[]; acceptance?: string; verify?: string },
+  ): GoalTask | { error: string } {
     const now = Date.now()
-    const task = { id: nextTaskID(now), title: title.slice(0, 200), status: "todo" as GoalTaskStatus, createdAt: now, updatedAt: now }
+    const id = nextTaskID(now)
+    const depends = opts?.depends ?? []
+    const invalid = validateDepends(goal.tasks, id, depends)
+    if (invalid) return { error: invalid }
+    const task: GoalTask = {
+      id,
+      title: title.slice(0, 200),
+      status: "todo",
+      createdAt: now,
+      updatedAt: now,
+      depends,
+    }
+    if (opts?.acceptance?.trim()) task.acceptance = opts.acceptance.trim().slice(0, 200)
+    if (opts?.verify?.trim()) task.verify = opts.verify.trim().slice(0, 200)
     goal.tasks.push(task)
     return task
+  }
+
+  /** Notice for a fresh task; warns (never rejects) past the soft node budget. */
+  private taskAddedNotice(goal: GoalRecord, id: string): string {
+    const index = goal.tasks.findIndex((t) => t.id === id)
+    const task = goal.tasks[index]!
+    let notice = `Task ${index + 1} added: ${task.title}`
+    if (goal.tasks.length === SOFT_NODE_WARN_COUNT + 1) {
+      notice += ` (past ${SOFT_NODE_WARN_COUNT} nodes — consider splitting this run; see /goal view)`
+    }
+    return notice
+  }
+
+  /** Reject `doing`/`done` while deps are unmet; everything else is always legal. */
+  private readinessRejection(goal: GoalRecord, index: number, status: GoalTaskStatus): string | undefined {
+    if (status !== "doing" && status !== "done") return undefined
+    const task = goal.tasks[index]!
+    const unmet = unmetDeps(task, goal.tasks)
+    if (unmet.length === 0) return undefined
+    const names = unmet.map((id) => taskNumber(goal.tasks, id)).join(", ")
+    return `Task ${index + 1} waits on ${names} — mark ${names} done first, or blocked with a note.`
   }
 
   async onGoalAddTask(input: Record<string, unknown>, context: ToolContext): Promise<{ content: string }> {
@@ -538,23 +684,42 @@ export class GoalController {
     const goal = await this.load(context.sessionID)
     if (!goal || goal.status !== "active") return { content: "No active goal to add a task to." }
     if (goal.tasks.length >= 50) return { content: "Task NOT added: task limit (50) reached." }
-    const task = this.addTask(goal, title)
+    const rawDepends = input?.depends
+    const resolved = resolveDepends(
+      goal.tasks,
+      rawDepends === undefined ? undefined : Array.isArray(rawDepends) ? rawDepends.map(String) : String(rawDepends),
+    )
+    if ("error" in resolved) return { content: resolved.error }
+    const task = this.addTask(goal, title, {
+      depends: resolved.ids,
+      acceptance: typeof input?.acceptance === "string" ? input.acceptance : undefined,
+      verify: typeof input?.verify === "string" ? input.verify : undefined,
+    })
+    if ("error" in task) return { content: task.error }
     await this.save(goal)
-    return { content: `Task ${goal.tasks.length} added (${task.id}): ${task.title}` }
+    return { content: `${this.taskAddedNotice(goal, task.id)} (${task.id})` }
   }
 
   async onGoalUpdateTask(input: Record<string, unknown>, context: ToolContext): Promise<{ content: string }> {
     const ref = String(input?.ref ?? input?.id ?? input?.taskId ?? "").trim()
     const rawStatus = String(input?.status ?? "").trim().toLowerCase()
-    if (rawStatus !== "todo" && rawStatus !== "doing" && rawStatus !== "done") {
-      return { content: "Task NOT updated: `status` must be todo, doing, or done." }
+    if (rawStatus !== "todo" && rawStatus !== "doing" && rawStatus !== "done" && rawStatus !== "blocked") {
+      return { content: "Task NOT updated: `status` must be todo, doing, done, or blocked." }
     }
     const goal = await this.load(context.sessionID)
     if (!goal || goal.status !== "active") return { content: "No active goal to update." }
     const index = resolveTaskRef(goal.tasks, ref)
     if (index < 0) return { content: `Task NOT updated: no such task ${ref || "(empty)"}.` }
+    const readiness = this.readinessRejection(goal, index, rawStatus as GoalTaskStatus)
+    if (readiness) return { content: `Task NOT updated: ${readiness}` }
     goal.tasks[index]!.status = rawStatus as GoalTaskStatus
     goal.tasks[index]!.updatedAt = Date.now()
+    if (typeof input?.note === "string" && input.note.trim()) {
+      goal.tasks[index]!.note = input.note.trim().slice(0, 200)
+    }
+    if (typeof input?.evidence === "string" && input.evidence.trim()) {
+      goal.tasks[index]!.evidence = input.evidence.trim().slice(0, 500)
+    }
     await this.save(goal)
     return { content: `Task ${index + 1} marked ${rawStatus}: ${goal.tasks[index]!.title}` }
   }
@@ -575,12 +740,20 @@ export class GoalController {
       `Objective: ${goal.objective}`,
       `Continuation turns used: ${goal.used.turns}${capText}.`,
       "Work autonomously toward this objective. Prefer concrete actions over narration.",
-      "Keep the task breakdown current: call goal_add_task(title) to plan, goal_update_task(ref, status) with todo/doing/done as work progresses.",
+      "Keep the task breakdown current: call goal_add_task(title, depends?, acceptance?, verify?) to plan, goal_update_task(ref, status) with todo/doing/done/blocked as work progresses (doing/done need deps done first).",
       "Prior goals in this session are archived: call goal_history() to review their outcomes before starting new work.",
       "Call goal_complete(evidence) only when the finish condition is verifiably met; the evidence must be concrete, independently checkable, and grounded in this session's observed work (file path, test result, or command output, at least 24 chars). Weak or generic evidence will be rejected and the goal will stay active.",
       "Call goal_block(reason) if you cannot proceed, including when a file or directory you need is outside the session working directory and access is denied.",
       "Stay inside the session working directory. Requests outside it are denied automatically.",
     ]
+    if (goal.graph?.mode === "graph") {
+      lines.push(
+        `You are the graph ORCHESTRATOR (run ${goal.graph.runId}, phase ${goal.graph.phase}), not a worker.`,
+        `Delegate through the Task/subagent tool to the repo roles (${goal.graph.agents.join(", ")}); never implement, review, or verify the work yourself.`,
+        "Ambiguity, missing plans, strategy conflicts, and human-only boundaries stop the run: call goal_block — never guess.",
+        "Read the repo's MAP.md / graph.md / linked plan (when present) before planning; append artifact paths, decisions, and follow-ups to the run artifacts when each phase finishes.",
+      )
+    }
     return lines.join("\n")
   }
 
@@ -602,6 +775,70 @@ export class GoalController {
     } catch {
       return []
     }
+  }
+
+  /**
+   * Graph-mode completion gate (issue #6, verdict-only scope).
+   *
+   * Layers on top of the loop heuristic (which the caller already ran):
+   * the evidence must cite this run's verdict file; when the file is
+   * readable under the session directory it is parsed and must show
+   * `pass` + green gate + zero P1 + fully proven nodes. When it is not
+   * readable the loop gate stands alone and the downgrade is explicit.
+   */
+  private async validateGraphEvidence(
+    evidence: string,
+    goal: GoalRecord,
+    sessionID: string,
+  ): Promise<{ rejection?: string; unverified?: string }> {
+    const runId = goal.graph?.runId ?? ""
+    const expected = `.opencode/runs/${runId}/verdict.md`
+    const active = "The goal remains active."
+    if (!runId || !evidence.includes(runId)) {
+      return {
+        rejection:
+          `Goal NOT completed: graph-mode evidence must cite this run's verdict file (${expected || "unknown run"}). ${active}`,
+      }
+    }
+    const dir = await this.sessionDirectory(sessionID)
+    if (!dir) {
+      return { unverified: "no session directory, so verdict.md cannot be verified" }
+    }
+    const cited = /(^|\s)([^\s'"]*verdict\.md)/i.exec(evidence)?.[2]
+    const path = await import("node:path")
+    const candidate = !cited
+      ? path.join(dir, expected)
+      : path.isAbsolute(cited)
+        ? path.normalize(cited)
+        : path.join(dir, cited)
+    if (!isPathInside(candidate, dir)) {
+      return {
+        rejection:
+          `Denied by goals plugin: ${candidate} is outside the session working directory ${dir}. ` +
+          `Work inside the session directory, or call goal_block with a specific reason. ${active}`,
+      }
+    }
+    const read = await readVerdictFile(candidate)
+    if ("error" in read) {
+      return { unverified: `verdict.md not readable at ${candidate}` }
+    }
+    const parsed = parseVerdict(read.text)
+    if (!parsed.ok) {
+      return { rejection: `Goal NOT completed: verdict.md is unparsable (${parsed.error}). ${active}` }
+    }
+    if (parsed.verdict !== "pass") {
+      return { rejection: `Goal NOT completed: verdict is fail (gate: ${parsed.gate}). ${active}` }
+    }
+    if (!parsed.gateGreen) {
+      return { rejection: `Goal NOT completed: gate is red (${parsed.gate}). ${active}` }
+    }
+    if (parsed.p1 > 0) {
+      return { rejection: `Goal NOT completed: P1 count ${parsed.p1} is not zero. ${active}` }
+    }
+    if (parsed.unproven.length > 0) {
+      return { rejection: `Goal NOT completed: nodes not proven (${parsed.unproven.join(", ")}). ${active}` }
+    }
+    return {}
   }
 
   // ---- permission sandbox ---------------------------------------------------
@@ -756,6 +993,17 @@ export class GoalController {
       return
     }
 
+    // Graph-mode verdict routing (issue #7) runs beside the loop path below:
+    // caps stay hard budgets, interrupts/control never route, and unrouted
+    // turns fall through to the standard stall/cap/continue logic untouched.
+    if (goal.graph?.mode === "graph") {
+      if (isCapReached(goal)) {
+        await this.limitGoal(goal, sessionID, eventID)
+        return
+      }
+      if (await this.routeGraphTurn(sessionID, goal, eventID)) return
+    }
+
     const madeToolCall = await this.executionMadeToolCall(sessionID)
     if (isContinuation && !madeToolCall) {
       goal.stalls += 1
@@ -782,20 +1030,140 @@ export class GoalController {
     }
 
     if (isCapReached(goal)) {
-      goal.status = "budget_limited"
-      goal.outcome = "budget_limited"
-      goal.lastHandledEventID = eventID
-      await this.save(goal)
-      await this.notify(
-        sessionID,
-        `Goal ${goal.id} stopped at its budget cap (${capSummary(goal.cap)}). This is not completion. /goal resume to continue or /goal clear to remove.`,
-      )
+      await this.limitGoal(goal, sessionID, eventID)
       return
     }
 
     goal.lastHandledEventID = eventID
     await this.save(goal)
     await this.injectContinuation(goal)
+  }
+
+  /** Shared budget-cap terminal: distinct from completion and from blocked. */
+  private async limitGoal(goal: GoalRecord, sessionID: string, eventID: string | undefined): Promise<void> {
+    goal.status = "budget_limited"
+    goal.outcome = "budget_limited"
+    goal.lastHandledEventID = eventID
+    await this.save(goal)
+    await this.notify(
+      sessionID,
+      `Goal ${goal.id} stopped at its budget cap (${capSummary(goal.cap)}). This is not completion. /goal resume to continue or /goal clear to remove.`,
+    )
+  }
+
+  /**
+   * Graph-mode verdict routing (issue #7). Returns true when the turn was
+   * fully handled (pass, blocked, or remediated); false falls through to the
+   * standard loop path after artifact-driven stepping below.
+   */
+  private async routeGraphTurn(sessionID: string, goal: GoalRecord, eventID: string | undefined): Promise<boolean> {
+    const signal = await this.classifyGraphSignal(sessionID, goal)
+    if (signal) {
+      const graph = goal.graph!
+      const route = routeGraphSignal(graph, signal, this.options.graph.maxRemediations)
+      if (signal.kind === "verdict") {
+        graph.lastVerdict = `${signal.verdict.verdict} (P1 ${signal.verdict.p1}, gate ${signal.verdict.gate})`
+      }
+      if (route.block) {
+        goal.status = "blocked"
+        goal.outcome = "blocked"
+        goal.blocker = route.block
+        goal.lastHandledEventID = eventID
+        await this.save(goal)
+        await this.notify(sessionID, route.notice)
+        return true
+      }
+      if (route.remediate) {
+        graph.remediationsUsed += 1
+        graph.phase = "remediate"
+        goal.lastHandledEventID = eventID
+        await this.notify(sessionID, route.notice)
+        // Consume the routed verdict so the re-verify turn waits for the
+        // worker's fresh file instead of re-routing on stale failure.
+        // Pass verdicts are never consumed: the completion gate re-reads them.
+        if (signal.kind === "verdict") {
+          await this.consumeRunArtifact(sessionID, graph.runId, "verdict.md")
+        }
+        // injectContinuation sends the remediate prompt for the current phase
+        // and saves the budget bump; control returns to verify afterwards.
+        await this.injectContinuation(goal)
+        graph.phase = "verify"
+        await this.save(goal)
+        return true
+      }
+      // Pass: set the decided phase explicitly and inject here (rather than
+      // falling through) so this turn sends the publish prompt exactly once.
+      // The cap check already ran before routing; stall accounting resumes
+      // next turn.
+      graph.phase = route.next
+      goal.lastHandledEventID = eventID
+      await this.notify(sessionID, route.notice)
+      await this.injectContinuation(goal)
+      return true
+    }
+    // No signal: step forward only on artifact evidence (plan→work on
+    // graph.md, work→verify on report.md). Publish holds until terminal;
+    // verify without a parsable verdict holds for the next turn.
+    // Persistence happens in the generic path's save below.
+    await this.stepGraphPhase(sessionID, goal)
+    return false
+  }
+
+  /** Advance one phase step when the phase's artifact exists. Never skips. */
+  private async stepGraphPhase(sessionID: string, goal: GoalRecord): Promise<void> {
+    const graph = goal.graph
+    if (!graph || (graph.phase !== "plan" && graph.phase !== "work")) return
+    const dir = await this.sessionDirectory(sessionID)
+    if (!dir) return
+    const path = await import("node:path")
+    const wanted = graph.phase === "plan" ? "graph.md" : "report.md"
+    const file = path.join(dir, ".opencode", "runs", graph.runId, wanted)
+    if (!isPathInside(file, dir)) return
+    if (await artifactExists(file)) graph.phase = nextGraphPhase(graph.phase)
+  }
+
+  /** Scoped best-effort delete of a consumed run artifact. */
+  private async consumeRunArtifact(sessionID: string, runId: string, name: string): Promise<void> {
+    const dir = await this.sessionDirectory(sessionID)
+    if (!dir) return
+    const path = await import("node:path")
+    const file = path.join(dir, ".opencode", "runs", runId, name)
+    if (!isPathInside(file, dir)) return
+    await consumeArtifact(file)
+  }
+
+  /**
+   * Signal classification, in priority order: explicit BLOCKED markers,
+   * ambiguity markers (narrow set — escalate, never retry), then the parsed
+   * verdict file in verify phase. Anything unrecognized returns undefined
+   * and the loop path continues the run.
+   */
+  private async classifyGraphSignal(sessionID: string, goal: GoalRecord): Promise<GraphSignal | undefined> {
+    const tail = await this.executionTail(sessionID)
+    let text = ""
+    for (const message of tail) {
+      if (message.type !== "assistant") continue
+      for (const part of message.content ?? []) {
+        if (part.type === "text" && part.text) text += `${part.text}\n`
+      }
+      if (message.text) text += `${message.text}\n`
+    }
+    const blocked = BLOCKED_MARKER.exec(text)
+    if (blocked) return { kind: "workerBlocked", reason: blocked[1]?.trim() || "model reported blocked" }
+    const lines = text.split("\n")
+    const flagged = lines.find((line) => AMBIGUITY_MARKER.test(line))
+    if (flagged) return { kind: "ambiguous", detail: flagged.trim().slice(0, 200) }
+    if (goal.graph?.phase !== "verify") return undefined
+    const dir = await this.sessionDirectory(sessionID)
+    if (!dir) return undefined
+    const path = await import("node:path")
+    const file = path.join(dir, ".opencode", "runs", goal.graph.runId, "verdict.md")
+    if (!isPathInside(file, dir)) return undefined
+    const read = await readVerdictFile(file)
+    if ("error" in read) return undefined
+    const parsed = parseVerdict(read.text)
+    if (!parsed.ok) return undefined
+    return { kind: "verdict", verdict: parsed, path: `.opencode/runs/${goal.graph.runId}/verdict.md` }
   }
 
   private async executionMadeToolCall(sessionID: string): Promise<boolean> {
@@ -848,9 +1216,13 @@ export class GoalController {
     if (goal.status !== "active") return
     goal.continuations += 1
     goal.used.turns += 1
+    // Prompt for the CURRENT phase. Phases advance only on evidence —
+    // routing decisions (routeGraphTurn) or observed artifacts — never
+    // per-turn: real phases take multiple turns, and blind advancement
+    // skips the verify window before the verdict file exists (QA finding).
+    const text = this.continuationTextFor(goal)
     await this.save(goal)
     this.continuationPending.add(goal.sessionID)
-    const text = this.options.continuationText ?? DEFAULT_CONTINUATION_PROMPT
     try {
       await this.ctx.session.prompt({
         sessionID: goal.sessionID,
@@ -861,6 +1233,58 @@ export class GoalController {
       })
     } catch {
       this.continuationPending.delete(goal.sessionID)
+    }
+  }
+
+  /** Loop prompt by default; phase-specific orchestrator prompt in graph mode. */
+  private continuationTextFor(goal: GoalRecord): string {
+    if (goal.graph?.mode === "graph" && this.options.continuationText === undefined) {
+      return this.graphContinuationPrompt(goal, goal.graph)
+    }
+    return this.options.continuationText ?? DEFAULT_CONTINUATION_PROMPT
+  }
+
+  private graphContinuationPrompt(goal: GoalRecord, graph: GoalGraph): string {
+    const [planner, worker, verifier] = [graph.agents[0], graph.agents[1], graph.agents[2]]
+    const run = `.opencode/runs/${graph.runId}`
+    const delegate = `Delegate through the Task/subagent tool to the repo role; do not implement, review, or verify the work yourself.`
+    const guard = `If the role reports ambiguity, a missing plan, a strategy conflict, or a human-only boundary, call goal_block with the specific reason — never guess.`
+    const close = "End this turn by calling a tool."
+    switch (graph.phase) {
+      case "plan":
+        return (
+          `Graph orchestrator (plan phase, run ${graph.runId}, issue ${graph.issue || "(unspecified)"}). ` +
+          `First check: does ${run}/graph.md exist? If not, launch the ${planner} subagent (issue, run-id, "produce graph.md per your contract"). ` +
+          `${delegate} ${guard} ${close}`
+        )
+      case "work":
+        return (
+          `Graph orchestrator (work phase, run ${graph.runId}). ` +
+          `First check: does ${run}/graph.md exist? If not, you are still in plan phase — produce it before anything else. ` +
+          `Otherwise launch the ${worker} subagent to execute graph.md node by node (one commit per node) until ${run}/report.md exists. ` +
+          `${delegate} If the worker reports blocked, call goal_block with its reason. ${close}`
+        )
+      case "verify":
+        return (
+          `Graph orchestrator (verify phase, run ${graph.runId}). ` +
+          `First check: does ${run}/report.md exist? If not, you are still in work phase. ` +
+          `Otherwise launch the ${verifier} subagent to audit the branch (its own gate run) until ${run}/verdict.md exists. ` +
+          `${delegate} ${guard} ${close}`
+        )
+      case "remediate":
+        return (
+          `Graph orchestrator (remediation phase, run ${graph.runId}). ` +
+          `Relaunch the ${worker} subagent with the verdict's P1/P2 findings quoted verbatim ("fix only these; do not expand scope"), then have the verifier overwrite ${run}/verdict.md with the fresh verdict. ` +
+          `This budget is spent by #7 routing; if the findings are exhausted or ambiguous, call goal_block. ${close}`
+        )
+      case "publish":
+        return (
+          `Graph orchestrator (publish phase, run ${graph.runId}). ` +
+          `On verdict pass, open or update the PR per repo rules (never merge; humans merge). ` +
+          `Then call goal_complete with the verdict path + gate result as evidence. If the verdict failed, call goal_block with the P1 summary. ${close}`
+        )
+      case "done":
+        return DEFAULT_CONTINUATION_PROMPT
     }
   }
 

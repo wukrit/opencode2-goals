@@ -7,6 +7,46 @@ are extracted from the matching section of this file by the release workflow.
 
 ## [Unreleased]
 
+### Added
+- Graph cookbook (issue #8, Graph-aware goals milestone):
+  `docs/graph-cookbook.md` with the loop-vs-graph decision rule, ASCII run
+  lifecycle, knowledge-graph convention (read-before/append-after, FOUND vs
+  GUESSED, folder rule), docs-first fallback triple prompts for repos without
+  a predefined graph, tuning, and the Claude Code port note; README links it
+  and graph-mode objectives carry the read/append convention.
+- Failure-policy routing (issue #7, Graph-aware goals milestone): pure
+  `routeGraphSignal` router in `src/graph.ts` (pass → publish, fail + budget
+  → remediate once, spent budget / worker-blocked / narrow ambiguity markers
+  → `blocked`), wired into `onTerminal` beside the untouched loop path;
+  `maxRemediations` budget (default 1), `lastVerdict` pointer on the graph
+  record, and notification discipline naming run, verdict, gate, branch, and
+  artifact paths. Caps stay hard budgets (`budget_limited`, never `blocked`).
+- Verdict-gated completion (issue #6, Graph-aware goals milestone): `src/verdict.ts`
+  parses the run's `verdict.md` (pass/fail, gate green/red token matrix,
+  P1/P2/P3 counts, per-node proven list); graph-mode `goal_complete` / `/goal
+  complete` re-parse the file scoped to the session directory (pass + green
+  gate + zero P1 + fully proven required, each rejection names the missing
+  piece) and fall back to explicitly-tagged model-attested completion only
+  when the file is unreadable. Loop-mode gating is untouched.
+- Repo-graph orchestration (issue #4, Graph-aware goals milestone):
+  `detectGraph` (agent/command registry first, `.opencode` fs fallback),
+  `GoalRecord.graph` phase machine (`plan → work → verify → publish`, plus
+  `remediate` for #7 routing), phase-specific orchestrator continuations with
+  artifact-presence guards, and `--graph <issue>` / `graph` opt-in on `/goal
+  set` and `goal_set` (explicit refusal when no graph is detected — never a
+  silent downgrade). Loop prompts are byte-identical when graph mode is off.
+- Goal tasks are a DAG (issue #5, Graph-aware goals milestone): `depends`
+  (ordering edges), `acceptance`, `verify`, per-node `evidence`, `note`, and
+  an explicit `blocked` status. `goal_add_task` takes `depends`/`acceptance`/
+  `verify`; `goal_update_task` takes `todo`/`doing`/`done`/`blocked` plus
+  optional `note`/`evidence`. `doing`/`done` are rejected while deps are
+  unmet; new pure helpers live in `src/graph.ts` (cycle-checked validation,
+  `readyTasks`, topological parallel groups). `/goal task add` accepts
+  `--depends 1,2 --acceptance "..." --verify "..."`; `/goal view` and the
+  sidebar widget render dep edges (`← after 1`), node fields, and parallel
+  groups. Old records normalize (`depends: []`); loop behavior without deps
+  is unchanged.
+
 ## [1.0.4] - 2026-09-28
 
 ### Added
