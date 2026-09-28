@@ -14,6 +14,10 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      # actions/setup-node defaults NPM_AUTH_TOKEN to the GITHUB_TOKEN, which
+      # makes npm skip the OIDC trusted-publisher flow (ENEEDAUTH). Clear it.
+      NPM_AUTH_TOKEN: ""
     steps:
       - uses: actions/checkout@v7
 
@@ -38,12 +42,8 @@ jobs:
       - run: bun test
 
       # prepack rebuilds dist/tui.js via scripts/build-tui.ts before packing.
-      - name: Publish diagnostics
-        run: |
-          npm --version
-          node -e "console.log('id-token available:', !!process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN)"
       - name: Publish to npm
-        run: npm publish --access public --provenance --loglevel silly
+        run: npm publish --access public --provenance
 
       - name: Extract changelog notes for this tag
         run: |

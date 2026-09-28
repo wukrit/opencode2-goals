@@ -71,9 +71,11 @@ runs typecheck + tests, publishes to npm with **OIDC provenance** (`prepack`
 rebuilds the widget), and creates the GitHub release with notes pulled from
 `CHANGELOG.md`. 
 
-**One-time npm setup:** npm does not auto-register trusted publishers — the
-first CI publish 401s/`ENEEDAUTH`s until you enable it on
-npmjs.com → the package → **Access** tab → *Trusted publishing*: owner
+**One-time npm setup:** npm does not auto-register trusted publishers — enable
+them on npmjs.com → the package → **Access** tab → *Trusted publishing*: owner
 `wukrit`, repository `opencode2-goals`, workflow name `release.yml`.
 Optionally also toggle *provenance: required* so everything after is provable.
-Then re-run the failed release job: `gh run rerun <run-id>`.
+**Client-side gotcha:** `actions/setup-node` injects `NPM_AUTH_TOKEN`
+(defaulting to the `GITHUB_TOKEN`), which makes npm skip the OIDC exchange
+entirely (`ENEEDAUTH` with zero registry calls) — the workflow nulls it at job
+level; keep that env if you ever refactor this file.

@@ -234,7 +234,8 @@ Full flow and the trusted-publishing caveat are in
 > **First CI publish:** npm does *not* auto-register trusted publishers.
 > Enable it once on npmjs.com → package → **Access** tab → *Trusted publishing*
 > → add owner `wukrit`, repo `opencode2-goals`, workflow `release.yml`.
-> Until then `npm publish --provenance` fails with `ENEEDAUTH`.
+> Also note `actions/setup-node` defaults `NPM_AUTH_TOKEN` to the `GITHUB_TOKEN`,
+> which breaks the OIDC flow (`ENEEDAUTH`) — the workflow clears it.
 
 ## Layout
 
