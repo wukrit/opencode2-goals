@@ -42,8 +42,14 @@ jobs:
       - run: bun test
 
       # prepack rebuilds dist/tui.js via scripts/build-tui.ts before packing.
+      - name: Auth diagnostics
+        run: |
+          echo "~/.npmrc:"; cat ~/.npmrc 2>/dev/null || echo "(none)"
+          echo "npm config list:"; npm config list
+          echo "NPM_AUTH_TOKEN=[${NPM_AUTH_TOKEN-unset}]"
+          node -e "console.log('id-token:', !!process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN)"
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: env -u NPM_AUTH_TOKEN -u NODE_AUTH_TOKEN npm publish --access public --provenance
 
       - name: Extract changelog notes for this tag
         run: |
