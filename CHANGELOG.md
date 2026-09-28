@@ -17,8 +17,8 @@ are extracted from the matching section of this file by the release workflow.
   `gh workflow run compat.yml`.
 - `CHANGELOG.md` (this file, shipped in the npm package), `CONTRIBUTING.md`,
   and issue/PR templates.
-- Demo GIF in the README, reproducible via `vhs scripts/demo.tape` against a
-  throwaway environment (`scripts/demo-env.sh`).
+- Demo GIF in the README (`docs/demo.gif`), recorded against a throwaway
+  environment running this checkout; the VHS tape is maintainer-local.
 - GitHub releases now take their notes from this file's matching section.
 
 ### Changed

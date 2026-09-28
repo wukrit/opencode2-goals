@@ -48,14 +48,15 @@ event model (`session.execution.*`
 boundaries, `session.usage.updated`) or hook surfaces, run
 `gh workflow run compat.yml` on your branch's pushed state and keep it green.
 
-## Recording the demo
+## Demo GIF
 
-The README GIF is generated, not hand-recorded — `vhs scripts/demo.tape`
-(install with `brew install vhs`). The tape drives `scripts/demo-env.sh`,
-which boots a standalone TUI against throwaway XDG dirs and this checkout as
-a directory install, so the capture shows current code without touching your
-global config or shared database. Edit the tape, re-record, and save the
-output as `docs/demo.gif`.
+`docs/demo.gif` is generated, not hand-recorded: the VHS tape and the
+isolated-environment script that drive it are **maintainer-local and
+gitignored** (`scripts/demo.tape`, `scripts/demo-env.sh`) because they encode
+machine-specific provider setup. If the widget or command UX changes
+visibly, ask a maintainer to re-record, or open a PR with a regenerated GIF
+(record against a throwaway `XDG_DATA_HOME`/`XDG_CONFIG_HOME` with this
+checkout loaded as a directory install so nothing touches shared state).
 
 ## Releasing
 

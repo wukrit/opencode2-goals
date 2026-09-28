@@ -256,8 +256,6 @@ dist/
 scripts/
   build-tui.ts      # compiles src/tui.tsx with the host's own @opentui/solid bun-plugin
   live-smoke.sh     # boots an isolated real host and asserts /goal is registered (no model call)
-  demo-env.sh       # throwaway XDG dirs + this checkout, for the demo recording
-  demo.tape         # VHS script that generates docs/demo.gif
   logcheck.py       # timestamp-accurate plugin-load verification against the opencode log
 test/
   harness.ts        # mocked context + deterministic event bus (+ permission hook)
