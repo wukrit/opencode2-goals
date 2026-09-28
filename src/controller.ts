@@ -1180,7 +1180,7 @@ export class GoalController {
     // Optimistic phase advancement: each continuation moves the orchestrator
     // one phase forward. Phase prompts are idempotent (artifact-presence
     // guards), so a phase that needs two turns simply repeats safely.
-    // Verdict-driven routing (remediate loop) lands in #7.
+    // Explicit routing decisions (routeGraphTurn) set the phase directly.
     if (goal.graph?.mode === "graph") {
       goal.graph.phase = nextGraphPhase(goal.graph.phase)
     }

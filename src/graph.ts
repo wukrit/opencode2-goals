@@ -177,7 +177,7 @@ export function routeGraphSignal(graph: GoalGraph, signal: GraphSignal, maxRemed
       remediate: true,
       notice:
         `Graph ${graph.runId}: verdict fail (${summary}) — remediation ${used}/${maxRemediations} started. ` +
-        `Worker requeued with P1/P2 findings only; verdict ${graph.lastVerdict ? `(previous: ${graph.lastVerdict}) ` : ""}and branch left in place.`,
+        `Worker requeued with P1/P2 findings only${graph.lastVerdict ? ` (previous verdict: ${graph.lastVerdict})` : ""}; branch left in place.`,
     }
   }
   return {
