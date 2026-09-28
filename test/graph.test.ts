@@ -150,7 +150,7 @@ describe("graph-mode goals", () => {
     expect(result.content).toContain("set")
     const goal = ctx.goal(SID)
     expect(goal?.graph?.mode).toBe("graph")
-    expect(goal?.graph?.phase).toBe("work") // kickoff prompt was plan; optimistic advance
+    expect(goal?.graph?.phase).toBe("plan") // kickoff prompt is plan; phases step on artifacts
     expect(goal?.graph?.runId).toContain("graph-123-")
     const prompts = ctx.promptsFor(SID)
     expect(prompts).toHaveLength(1)
@@ -160,27 +160,44 @@ describe("graph-mode goals", () => {
     expect(system).toContain("ORCHESTRATOR")
   })
 
-  test("continuations advance work → verify → publish with phase prompts", async () => {
+  test("phases hold without artifacts and step on artifact evidence", async () => {
     const ctx = new MockContext()
     await ctx.start()
     fullRegistry(ctx)
+    const dir = mkdtempSync(join(tmpdir(), "goals-phase-"))
+    tmpDirs.push(dir)
+    ctx.setSessionDirectory(SID, dir)
     await ctx.callTool(SID, "goal_set", { objective: "Ship it", graph: "123" })
+    const runId = ctx.goal(SID)?.graph?.runId ?? ""
+    const runDir = join(dir, ".opencode", "runs", runId)
+    const writeArtifact = (name: string): void => {
+      mkdirSync(runDir, { recursive: true })
+      writeFileSync(join(runDir, name), "# artifact")
+    }
 
+    // No artifacts: plan repeats, never skips ahead.
+    await emitToolTurn(ctx, SID, "g0")
+    expect(ctx.goal(SID)?.graph?.phase).toBe("plan")
+
+    writeArtifact("graph.md")
     await emitToolTurn(ctx, SID, "g1")
-    expect(ctx.goal(SID)?.graph?.phase).toBe("verify")
+    expect(ctx.goal(SID)?.graph?.phase).toBe("work")
     await emitToolTurn(ctx, SID, "g2")
-    expect(ctx.goal(SID)?.graph?.phase).toBe("publish")
+    expect(ctx.goal(SID)?.graph?.phase).toBe("work")
+
+    writeArtifact("report.md")
     await emitToolTurn(ctx, SID, "g3")
-    expect(ctx.goal(SID)?.graph?.phase).toBe("done")
+    expect(ctx.goal(SID)?.graph?.phase).toBe("verify")
 
     const texts = ctx.promptsFor(SID).map((p) => p.text)
-    expect(texts).toHaveLength(4)
-    expect(texts[1]).toContain("work phase")
-    expect(texts[1]).toContain("graph-worker")
-    expect(texts[2]).toContain("verify phase")
-    expect(texts[2]).toContain("graph-verifier")
-    expect(texts[3]).toContain("publish phase")
-    expect(texts[3]).toContain("goal_complete")
+    expect(texts).toHaveLength(5)
+    expect(texts[0]).toContain("plan phase")
+    expect(texts[1]).toContain("plan phase")
+    expect(texts[2]).toContain("work phase")
+    expect(texts[2]).toContain("graph-worker")
+    expect(texts[3]).toContain("work phase")
+    expect(texts[4]).toContain("verify phase")
+    expect(texts[4]).toContain("graph-verifier")
   })
 
   test("partial graph proceeds with a missing-roles warning", async () => {
@@ -220,7 +237,7 @@ describe("graph-mode goals", () => {
     const roundTripped = JSON.parse(JSON.stringify({ goal: snapshot })) as {
       goal: { graph: { runId: string; phase: string } }
     }
-    expect(roundTripped.goal.graph.phase).toBe("work")
+    expect(roundTripped.goal.graph.phase).toBe("plan")
   })
 })
 
@@ -302,7 +319,13 @@ describe("failure-policy routing through real setup()", () => {
     ctx.setSessionDirectory(sessionID, dir)
     await ctx.callTool(sessionID, "goal_set", { objective: "Ship it", graph: "123" })
     const runId = ctx.goal(sessionID)?.graph?.runId ?? ""
-    // Advance plan → work → verify with tool-calling turns.
+    // Step plan → work → verify on artifact evidence (no skipping).
+    const runDir = join(dir, ".opencode", "runs", runId)
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, "graph.md"), "# graph")
+    await emitToolTurn(ctx, sessionID, `${sessionID}-p`)
+    expect(ctx.goal(sessionID)?.graph?.phase).toBe("work")
+    writeFileSync(join(runDir, "report.md"), "# report")
     await emitToolTurn(ctx, sessionID, `${sessionID}-w`)
     expect(ctx.goal(sessionID)?.graph?.phase).toBe("verify")
     return { ctx, dir, runId }
@@ -339,7 +362,7 @@ describe("failure-policy routing through real setup()", () => {
     writeVerdict(dir, runId, PASS)
     await emitToolTurn(ctx, "ses_route_pass", "ses_route_pass-v")
     expect(ctx.goal("ses_route_pass")?.status).toBe("active")
-    expect(ctx.goal("ses_route_pass")?.graph?.phase).toBe("done")
+    expect(ctx.goal("ses_route_pass")?.graph?.phase).toBe("publish")
     expect(ctx.goal("ses_route_pass")?.graph?.lastVerdict).toContain("pass")
     const texts = ctx.promptsFor("ses_route_pass").map((p) => p.text)
     expect(texts[texts.length - 1]).toContain("publish phase")
@@ -355,7 +378,9 @@ describe("failure-policy routing through real setup()", () => {
     expect(ctx.goal("ses_route_fail")?.graph?.phase).toBe("verify")
     const remediation = ctx.promptsFor("ses_route_fail").map((p) => p.text).pop() ?? ""
     expect(remediation).toContain("remediation phase")
-
+    // Routed verdict is consumed: the re-verify turn waits for fresh output.
+    const { existsSync } = await import("node:fs")
+    expect(existsSync(join(dir, ".opencode", "runs", runId, "verdict.md"))).toBe(false)
     writeVerdict(dir, runId, FAIL)
     await emitToolTurn(ctx, "ses_route_fail", "ses_route_fail-v2")
     const goal = ctx.goal("ses_route_fail")

@@ -28,7 +28,7 @@ import { formatGoal, formatGoalHistory, parseGoalCommand, type GoalCommand } fro
 import { detectGraph } from "./detect"
 import { validateClearRequest, validateEvidence } from "./evidence"
 import { isPathInside } from "./permission"
-import { parseVerdict, readVerdictFile } from "./verdict"
+import { parseVerdict, readVerdictFile, artifactExists, consumeArtifact } from "./verdict"
 import { AMBIGUITY_MARKER, unmetDeps, resolveDepends, routeGraphSignal, SOFT_NODE_WARN_COUNT, taskNumber, validateDepends, type GraphSignal } from "./graph"
 import { resolveOptions, type Options } from "./options"
 import { decidePermission } from "./permission"
@@ -1053,43 +1053,82 @@ export class GoalController {
   /**
    * Graph-mode verdict routing (issue #7). Returns true when the turn was
    * fully handled (pass, blocked, or remediated); false falls through to the
-   * standard loop path (unready phases with no classifiable signal).
+   * standard loop path after artifact-driven stepping below.
    */
   private async routeGraphTurn(sessionID: string, goal: GoalRecord, eventID: string | undefined): Promise<boolean> {
     const signal = await this.classifyGraphSignal(sessionID, goal)
-    if (!signal) return false
-    const graph = goal.graph!
-    const route = routeGraphSignal(graph, signal, this.options.graph.maxRemediations)
-    if (signal.kind === "verdict") {
-      graph.lastVerdict = `${signal.verdict.verdict} (P1 ${signal.verdict.p1}, gate ${signal.verdict.gate})`
-    }
-    if (route.block) {
-      goal.status = "blocked"
-      goal.outcome = "blocked"
-      goal.blocker = route.block
+    if (signal) {
+      const graph = goal.graph!
+      const route = routeGraphSignal(graph, signal, this.options.graph.maxRemediations)
+      if (signal.kind === "verdict") {
+        graph.lastVerdict = `${signal.verdict.verdict} (P1 ${signal.verdict.p1}, gate ${signal.verdict.gate})`
+      }
+      if (route.block) {
+        goal.status = "blocked"
+        goal.outcome = "blocked"
+        goal.blocker = route.block
+        goal.lastHandledEventID = eventID
+        await this.save(goal)
+        await this.notify(sessionID, route.notice)
+        return true
+      }
+      if (route.remediate) {
+        graph.remediationsUsed += 1
+        graph.phase = "remediate"
+        goal.lastHandledEventID = eventID
+        await this.notify(sessionID, route.notice)
+        // Consume the routed verdict so the re-verify turn waits for the
+        // worker's fresh file instead of re-routing on stale failure.
+        // Pass verdicts are never consumed: the completion gate re-reads them.
+        if (signal.kind === "verdict") {
+          await this.consumeRunArtifact(sessionID, graph.runId, "verdict.md")
+        }
+        // injectContinuation sends the remediate prompt for the current phase
+        // and saves the budget bump; control returns to verify afterwards.
+        await this.injectContinuation(goal)
+        graph.phase = "verify"
+        await this.save(goal)
+        return true
+      }
+      // Pass: set the decided phase explicitly and inject here (rather than
+      // falling through) so this turn sends the publish prompt exactly once.
+      // The cap check already ran before routing; stall accounting resumes
+      // next turn.
+      graph.phase = route.next
       goal.lastHandledEventID = eventID
-      await this.save(goal)
       await this.notify(sessionID, route.notice)
-      return true
-    }
-    if (route.remediate) {
-      graph.remediationsUsed += 1
-      graph.phase = "remediate"
-      goal.lastHandledEventID = eventID
-      await this.notify(sessionID, route.notice)
-      // injectContinuation saves the budget bump and advances remediate→verify.
       await this.injectContinuation(goal)
       return true
     }
-    // Pass: set the decided phase explicitly and inject here (rather than
-    // falling through) so this turn sends the publish prompt exactly once.
-    // The cap check already ran before routing; stall accounting resumes
-    // next turn.
-    graph.phase = route.next
-    goal.lastHandledEventID = eventID
-    await this.notify(sessionID, route.notice)
-    await this.injectContinuation(goal)
-    return true
+    // No signal: step forward only on artifact evidence (plan→work on
+    // graph.md, work→verify on report.md). Publish holds until terminal;
+    // verify without a parsable verdict holds for the next turn.
+    // Persistence happens in the generic path's save below.
+    await this.stepGraphPhase(sessionID, goal)
+    return false
+  }
+
+  /** Advance one phase step when the phase's artifact exists. Never skips. */
+  private async stepGraphPhase(sessionID: string, goal: GoalRecord): Promise<void> {
+    const graph = goal.graph
+    if (!graph || (graph.phase !== "plan" && graph.phase !== "work")) return
+    const dir = await this.sessionDirectory(sessionID)
+    if (!dir) return
+    const path = await import("node:path")
+    const wanted = graph.phase === "plan" ? "graph.md" : "report.md"
+    const file = path.join(dir, ".opencode", "runs", graph.runId, wanted)
+    if (!isPathInside(file, dir)) return
+    if (await artifactExists(file)) graph.phase = nextGraphPhase(graph.phase)
+  }
+
+  /** Scoped best-effort delete of a consumed run artifact. */
+  private async consumeRunArtifact(sessionID: string, runId: string, name: string): Promise<void> {
+    const dir = await this.sessionDirectory(sessionID)
+    if (!dir) return
+    const path = await import("node:path")
+    const file = path.join(dir, ".opencode", "runs", runId, name)
+    if (!isPathInside(file, dir)) return
+    await consumeArtifact(file)
   }
 
   /**
@@ -1176,14 +1215,11 @@ export class GoalController {
     if (goal.status !== "active") return
     goal.continuations += 1
     goal.used.turns += 1
+    // Prompt for the CURRENT phase. Phases advance only on evidence —
+    // routing decisions (routeGraphTurn) or observed artifacts — never
+    // per-turn: real phases take multiple turns, and blind advancement
+    // skips the verify window before the verdict file exists (QA finding).
     const text = this.continuationTextFor(goal)
-    // Optimistic phase advancement: each continuation moves the orchestrator
-    // one phase forward. Phase prompts are idempotent (artifact-presence
-    // guards), so a phase that needs two turns simply repeats safely.
-    // Explicit routing decisions (routeGraphTurn) set the phase directly.
-    if (goal.graph?.mode === "graph") {
-      goal.graph.phase = nextGraphPhase(goal.graph.phase)
-    }
     await this.save(goal)
     this.continuationPending.add(goal.sessionID)
     try {
@@ -1237,7 +1273,7 @@ export class GoalController {
       case "remediate":
         return (
           `Graph orchestrator (remediation phase, run ${graph.runId}). ` +
-          `Relaunch the ${worker} subagent with the verdict's P1/P2 findings quoted verbatim ("fix only these; do not expand scope"), then re-verify. ` +
+          `Relaunch the ${worker} subagent with the verdict's P1/P2 findings quoted verbatim ("fix only these; do not expand scope"), then have the verifier overwrite ${run}/verdict.md with the fresh verdict. ` +
           `This budget is spent by #7 routing; if the findings are exhausted or ambiguous, call goal_block. ${close}`
         )
       case "publish":

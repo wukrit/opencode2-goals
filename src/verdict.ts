@@ -121,3 +121,25 @@ export async function readVerdictFile(absPath: string): Promise<{ text: string }
     return { error: "not readable" }
   }
 }
+
+/** Existence check for run artifacts (phase stepping); never throws. */
+export async function artifactExists(absPath: string): Promise<boolean> {
+  try {
+    const fs = await import("node:fs/promises")
+    const stat = await fs.stat(absPath)
+    return stat.isFile()
+  } catch {
+    return false
+  }
+}
+
+/** Best-effort consume (delete) of a routed artifact; never throws. */
+export async function consumeArtifact(absPath: string): Promise<void> {
+  try {
+    const fs = await import("node:fs/promises")
+    await fs.unlink(absPath)
+  } catch {
+    // A leftover file fails safe: verify-phase routing re-reads it, and the
+    // completion gate treats a stale fail as a rejection, never a pass.
+  }
+}
