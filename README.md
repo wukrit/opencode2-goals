@@ -57,6 +57,9 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
   pass → publish, fail + budget → one remediation requeue, spent budget /
   worker-blocked / ambiguity → `blocked` with branch and artifacts named.
   Caps stay hard budgets; unrecognized turns fall through to the loop path.
+- Graph mode (`--graph`) is orchestrator discipline plus repo conventions —
+  the decision rule, lifecycle, knowledge-graph convention, fallback role
+  prompts, and tuning live in [`docs/graph-cookbook.md`](docs/graph-cookbook.md).
 
 ### Durability
 

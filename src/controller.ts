@@ -751,6 +751,7 @@ export class GoalController {
         `You are the graph ORCHESTRATOR (run ${goal.graph.runId}, phase ${goal.graph.phase}), not a worker.`,
         `Delegate through the Task/subagent tool to the repo roles (${goal.graph.agents.join(", ")}); never implement, review, or verify the work yourself.`,
         "Ambiguity, missing plans, strategy conflicts, and human-only boundaries stop the run: call goal_block — never guess.",
+        "Read the repo's MAP.md / graph.md / linked plan (when present) before planning; append artifact paths, decisions, and follow-ups to the run artifacts when each phase finishes.",
       )
     }
     return lines.join("\n")

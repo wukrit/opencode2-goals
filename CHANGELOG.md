@@ -8,6 +8,12 @@ are extracted from the matching section of this file by the release workflow.
 ## [Unreleased]
 
 ### Added
+- Graph cookbook (issue #8, Graph-aware goals milestone):
+  `docs/graph-cookbook.md` with the loop-vs-graph decision rule, ASCII run
+  lifecycle, knowledge-graph convention (read-before/append-after, FOUND vs
+  GUESSED, folder rule), docs-first fallback triple prompts for repos without
+  a predefined graph, tuning, and the Claude Code port note; README links it
+  and graph-mode objectives carry the read/append convention.
 - Failure-policy routing (issue #7, Graph-aware goals milestone): pure
   `routeGraphSignal` router in `src/graph.ts` (pass → publish, fail + budget
   → remediate once, spent budget / worker-blocked / narrow ambiguity markers
