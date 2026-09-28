@@ -215,20 +215,18 @@ for why); directory installs compile the source directly.
 
 ### Releasing
 
-Bump `version` in `package.json`, update the Changelog, commit, then push a
-tag — CI (`.github/workflows/release.yml`) checks the tag against
-`package.json`, runs typecheck + tests, publishes to npm with **OIDC
-provenance** (no stored token; `prepack` rebuilds the widget), and creates
-the GitHub release:
+Maintainers: bump `package.json`, date the `[Unreleased]` section in
+[CHANGELOG.md](CHANGELOG.md), then push a tag —
+`.github/workflows/release.yml` verifies the tag, runs typecheck + tests,
+publishes to npm with **OIDC provenance**, and creates the GitHub release
+with notes from the changelog:
 
 ```sh
 git tag v1.0.4 && git push origin v1.0.4
 ```
 
-If provenance publishing fails with a 401 the first time, enable trusted
-publishing for this repo/workflow on the package's "Publishing access" page
-(npmjs.com) — the first CI publish otherwise registers the workflow as a
-trusted publisher automatically.
+Full flow and the trusted-publishing caveat are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Layout
 
@@ -258,17 +256,8 @@ test/
 
 ## Changelog
 
-- **1.0.3** — `goal_complete`/`goal_block` and their slash-command twins
-  now check goal presence and status before demanding evidence/reason, so a
-  terminal or absent goal reports its actual state instead of a fixable-sounding
-  rejection. README audit: documented `continuationText`, command aliases, and
-  `todo` task status.
-- **1.0.2** — widget ships pre-compiled (`dist/tui.js`), so npm installs load
-  it too; fixes issue #3 (host JSX transform skips `node_modules`).
-- **1.0.1** — host TUI peers marked optional; npm installs no longer fail
-  dependency resolution (`ERESOLVE`).
-- **1.0.0** — first public release: full goal loop, tool gates, caps, durable
-  history, permission sandbox, sidebar widget.
+Release history lives in [CHANGELOG.md](CHANGELOG.md) — GitHub releases reuse
+its sections as notes.
 
 ## License
 

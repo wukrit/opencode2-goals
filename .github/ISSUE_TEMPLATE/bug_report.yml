@@ -1,0 +1,47 @@
+name: Bug report
+description: Something the goal loop got wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Most bugs here are version interactions with the OpenCode host, so the
+        two versions below are the first thing we look for.
+  - type: input
+    id: opencode-version
+    attributes:
+      label: OpenCode host version
+      description: "`opencode --version` (the plugin is checked against latest 2.x weekly in CI)"
+      placeholder: "2.0.18"
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: opencode2-goals version
+      description: npm version or the commit you installed from
+      placeholder: "1.0.3"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-shape
+    attributes:
+      label: Install shape
+      options:
+        - npm package
+        - local directory
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The goal you set, what you expected, what the loop did instead. Session logs help a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps from a fresh config, if you have them.

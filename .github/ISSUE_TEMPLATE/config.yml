@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Host-compat failure
+    url: https://github.com/wukrit/opencode2-goals/actions/workflows/compat.yml
+    description: If the weekly compatibility job is red, that's the first place to look before filing.
