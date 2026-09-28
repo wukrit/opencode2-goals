@@ -131,9 +131,11 @@ gate: pnpm verify — 3 passed, 1 failed
     }
     green("pnpm verify — exit 0")
     green("42 passed, suite ok")
+    green("40 passed, 0 errors")
     red("3 passed, 1 failed")
     red("exit 1")
     red("error: connection refused")
+    red("2 errors, aborting")
   })
 })
 

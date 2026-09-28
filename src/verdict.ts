@@ -76,8 +76,8 @@ export function parseVerdict(text: string): ParsedVerdict {
   if (!gateMatch) return { ok: false, error: "no `gate: <command + result>` line" }
   const gate = gateMatch[1]!.trim()
   if (!gate) return { ok: false, error: "empty gate result" }
-  // "0 failed" is a green signal, not a red one — strip zero-counts first.
-  const redScan = gate.replace(/\b0\s+fail\w*/gi, "")
+  // Zero-counts ("0 failed", "0 errors") are green signals, not red ones.
+  const redScan = gate.replace(/\b0\s+(fail\w*|error\w*)/gi, "")
   const green = (GREEN_TOKENS.test(gate) || OK_WORD.test(gate)) && !RED_TOKENS.test(redScan)
   const all = sections(text)
   const acceptance = sectionLines(all, (t) => t.startsWith("node acceptance"))
