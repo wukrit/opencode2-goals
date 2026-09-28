@@ -10,6 +10,8 @@ continuation on turn boundaries; an evidence-gated completion tool; stall suppre
 budget caps safe by default; an unattended permission sandbox; and a live TUI
 progress widget in the sidebar.
 
+![The goal loop in the OpenCode TUI: /goal commands drive a durable goal whose live status, budget counters, and task breakdown render in the sidebar](docs/demo.gif)
+
 ## What it does
 
 ### Commands — for you
@@ -249,6 +251,8 @@ dist/
 scripts/
   build-tui.ts      # compiles src/tui.tsx with the host's own @opentui/solid bun-plugin
   live-smoke.sh     # boots an isolated real host and asserts /goal is registered (no model call)
+  demo-env.sh       # throwaway XDG dirs + this checkout, for the demo recording
+  demo.tape         # VHS script that generates docs/demo.gif
   logcheck.py       # timestamp-accurate plugin-load verification against the opencode log
 test/
   harness.ts        # mocked context + deterministic event bus (+ permission hook)

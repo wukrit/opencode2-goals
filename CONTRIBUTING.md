@@ -41,9 +41,21 @@ decision is recorded rather than re-litigated weekly.
 
 The plugin is developed against the pinned `@opencode/plugin` devDep and
 continuously checked against the **latest 2.x** by the weekly
-`compat.yml` job. If you're touching the event model (`session.execution.*`
+`compat.yml` job — both the type surface (float + typecheck + tests) and a
+**live smoke test** (`scripts/live-smoke.sh` boots an isolated real host and
+asserts `/goal` is registered; no model call needed). If you're touching the
+event model (`session.execution.*`
 boundaries, `session.usage.updated`) or hook surfaces, run
 `gh workflow run compat.yml` on your branch's pushed state and keep it green.
+
+## Recording the demo
+
+The README GIF is generated, not hand-recorded — `vhs scripts/demo.tape`
+(install with `brew install vhs`). The tape drives `scripts/demo-env.sh`,
+which boots a standalone TUI against throwaway XDG dirs and this checkout as
+a directory install, so the capture shows current code without touching your
+global config or shared database. Edit the tape, re-record, and save the
+output as `docs/demo.gif`.
 
 ## Releasing
 

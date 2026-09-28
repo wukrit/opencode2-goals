@@ -10,11 +10,15 @@ are extracted from the matching section of this file by the release workflow.
 ## [1.0.4] - 2026-09-28
 
 ### Added
-- Weekly CI job (`compat.yml`) that floats `@opencode/plugin` to the latest
-  2.x and re-runs typecheck + tests, so host type/event drift is caught
-  before users hit it. Manual trigger: `gh workflow run compat.yml`.
-- `CHANGELOG.md` (this file), `CONTRIBUTING.md`, and issue/PR templates.
-- Demo: sidebar goal-loop capture in the README.
+- Weekly CI job (`compat.yml`) guarding host compatibility: floats
+  `@opencode/plugin` to the latest 2.x and re-runs typecheck + tests, *and*
+  boots a real isolated OpenCode server (`scripts/live-smoke.sh`) asserting
+  `/goal` registers — drift is caught before users hit it. Manual trigger:
+  `gh workflow run compat.yml`.
+- `CHANGELOG.md` (this file, shipped in the npm package), `CONTRIBUTING.md`,
+  and issue/PR templates.
+- Demo GIF in the README, reproducible via `vhs scripts/demo.tape` against a
+  throwaway environment (`scripts/demo-env.sh`).
 - GitHub releases now take their notes from this file's matching section.
 
 ### Changed
