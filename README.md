@@ -21,8 +21,12 @@ progress widget in the sidebar.
 | `/goal pause` / `/goal resume` | Halt or re-arm continuation without losing state. |
 | `/goal complete <evidence>` / `/goal block <reason>` | Terminal outcomes, same gates as the tools below. |
 | `/goal clear` | Remove the goal (archived first — see Durability). |
-| `/goal task add <title>` / `/goal task <n> doing\|done` | Drive the task breakdown from the keyboard. |
+| `/goal task add <title>` / `/goal task <n> todo\|doing\|done` | Drive the task breakdown from the keyboard (either order: `task 1 done` or `task done 1`). |
 | `/goal history` | Every terminal or superseded goal this session produced (`log` is an alias). |
+
+Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
+`tasks` (`task list`). `--cap N` is an alias for `--turns N`, and a bare
+`/goal <objective>` means `/goal set <objective>`.
 
 ### Tools — for the model
 
@@ -112,10 +116,15 @@ With options (all optional):
   "options": {
     "stallLimit": 1,
     "defaultCapTurns": 10,
-    "defaultCapTokens": 100000
+    "defaultCapTokens": 100000,
+    "continuationText": "Continue the goal. End the turn with a tool call."
   }
 }
 ```
+
+`continuationText` replaces the default continuation prompt (the message
+injected at each turn boundary); the other options set the stall tolerance and
+the default caps that `/goal set` applies when no flags are given.
 
 Then reload locations:
 
@@ -214,7 +223,7 @@ src/
   tui.tsx           # sidebar progress widget source (pre-compiled to dist/tui.js, the ./tui export)
   evidence.ts       # completion-evidence gate + user-request gate for goal_clear
   permission.ts     # path sandbox (decidePermission, fail-closed containment)
-  options.ts        # plugin options (stallLimit, defaultCapTurns/Tokens)
+  options.ts        # plugin options (stallLimit, continuationText, defaultCapTurns/Tokens)
   types.ts          # structural slice of the plugin context
 dist/
   tui.js            # built widget (gitignored; produced by scripts/build-tui.ts)
@@ -224,10 +233,15 @@ scripts/
 test/
   harness.ts        # mocked context + deterministic event bus (+ permission hook)
   goal-loop.test.ts # integration tests through the real setup()
+  tasks.test.ts     # tasks + widget-bridge integration tests
 ```
 
 ## Changelog
 
+- **Unreleased** — `goal_complete`/`goal_block` and their slash-command twins
+  now check goal presence and status before demanding evidence/reason, so a
+  terminal or absent goal reports its actual state instead of a fixable-sounding
+  rejection.
 - **1.0.2** — widget ships pre-compiled (`dist/tui.js`), so npm installs load
   it too; fixes issue #3 (host JSX transform skips `node_modules`).
 - **1.0.1** — host TUI peers marked optional; npm installs no longer fail
