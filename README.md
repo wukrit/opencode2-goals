@@ -6,7 +6,7 @@
 An [OpenCode](https://opencode.ai/v2/docs/) **v2** plugin that implements a
 Codex-style goal loop: durable, session-scoped goal state; a `/goal` command
 surface; the objective injected into every model call; event-driven
-continuation on idle; an evidence-gated completion tool; stall suppression;
+continuation on turn boundaries; an evidence-gated completion tool; stall suppression;
 budget caps safe by default; an unattended permission sandbox; and a live TUI
 progress widget in the sidebar.
 
