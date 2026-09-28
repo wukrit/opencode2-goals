@@ -1,0 +1,49 @@
+name: Release
+
+# Tag-push is the whole release: checks run, the package publishes to npm with
+# OIDC provenance (no stored token), and the GitHub release is created.
+#   git tag v1.0.4 && git push origin v1.0.4
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub release
+  id-token: write # npm OIDC provenance attestation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # npm 10+ ships here; provenance needs npm >= 9
+
+      - name: Verify the tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json v$version" >&2
+            exit 1
+          fi
+
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+      # prepack rebuilds dist/tui.js via scripts/build-tui.ts before packing.
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes

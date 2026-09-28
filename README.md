@@ -210,6 +210,23 @@ If you change `src/tui.tsx`, run `bun run build:tui` before testing the
 **npm** install shape — `exports["./tui"]` serves `dist/tui.js` (see issue #3
 for why); directory installs compile the source directly.
 
+### Releasing
+
+Bump `version` in `package.json`, update the Changelog, commit, then push a
+tag — CI (`.github/workflows/release.yml`) checks the tag against
+`package.json`, runs typecheck + tests, publishes to npm with **OIDC
+provenance** (no stored token; `prepack` rebuilds the widget), and creates
+the GitHub release:
+
+```sh
+git tag v1.0.4 && git push origin v1.0.4
+```
+
+If provenance publishing fails with a 401 the first time, enable trusted
+publishing for this repo/workflow on the package's "Publishing access" page
+(npmjs.com) — the first CI publish otherwise registers the workflow as a
+trusted publisher automatically.
+
 ## Layout
 
 ```
