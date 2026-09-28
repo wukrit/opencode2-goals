@@ -231,11 +231,10 @@ git tag v1.0.4 && git push origin v1.0.4
 Full flow and the trusted-publishing caveat are in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-> **First CI publish:** npm does *not* auto-register trusted publishers.
-> Enable it once on npmjs.com → package → **Access** tab → *Trusted publishing*
-> → add owner `wukrit`, repo `opencode2-goals`, workflow `release.yml`.
-> Also note `actions/setup-node` defaults `NPM_AUTH_TOKEN` to the `GITHUB_TOKEN`,
-> which breaks the OIDC flow (`ENEEDAUTH`) — the workflow clears it.
+> **First CI publish:** npm does *not* auto-register trusted publishers — and
+> trusted publishing needs **npm 11+** (the workflow runs node 24). Enable the
+> publisher once on npmjs.com → package → **Access** tab → *Trusted publishing*
+> → owner `wukrit`, repo `opencode2-goals`, workflow `release.yml`.
 
 ## Layout
 

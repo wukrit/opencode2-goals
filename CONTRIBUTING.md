@@ -75,7 +75,9 @@ rebuilds the widget), and creates the GitHub release with notes pulled from
 them on npmjs.com → the package → **Access** tab → *Trusted publishing*: owner
 `wukrit`, repository `opencode2-goals`, workflow name `release.yml`.
 Optionally also toggle *provenance: required* so everything after is provable.
-**Client-side gotcha:** `actions/setup-node` injects `NPM_AUTH_TOKEN`
-(defaulting to the `GITHUB_TOKEN`), which makes npm skip the OIDC exchange
-entirely (`ENEEDAUTH` with zero registry calls) — the workflow nulls it at job
-level; keep that env if you ever refactor this file.
+**Client-side gotchas (both cost us three failed v1.0.4 runs):** npm **11+**
+is required — npm 10 never attempts the OIDC exchange and fails with a
+client-side `ENEEDAUTH` (we run node 24, which ships npm 11). And
+`actions/setup-node` injects `NPM_AUTH_TOKEN` defaulting to the
+`GITHUB_TOKEN`, which also breaks the OIDC flow — the publish step strips it
+with `env -u`; keep that if you ever refactor this file.
