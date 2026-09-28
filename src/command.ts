@@ -265,7 +265,8 @@ export function formatGoal(goal: GoalRecord | undefined, sessionID: string): str
     `Continuations: ${goal.continuations} · stalls: ${goal.stalls} · cap: ${capSummary(goal.cap)} · used: ${goal.used.turns} turns, ${goal.used.tokens} tokens`,
   ]
   if (goal.graph?.mode === "graph") {
-    lines.push(`Graph: phase ${goal.graph.phase} · run ${goal.graph.runId} · issue ${goal.graph.issue || "(unspecified)"}`)
+    lines.push(`Graph: phase ${goal.graph.phase} · run ${goal.graph.runId} · issue ${goal.graph.issue || "(unspecified)"} · remediations ${goal.graph.remediationsUsed}`)
+    if (goal.graph.lastVerdict) lines.push(`Last verdict: ${goal.graph.lastVerdict}`)
   }
   if (tasks.length > 0) {
     lines.push(

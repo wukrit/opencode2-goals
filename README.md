@@ -53,6 +53,10 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 - A continuation that makes no tool call counts as a **stall**; reaching a
   cap produces the distinct `budget_limited` outcome — neither completion
   nor blocked.
+- Graph-mode turns route through the failure policy first (issue #7): verdict
+  pass → publish, fail + budget → one remediation requeue, spent budget /
+  worker-blocked / ambiguity → `blocked` with branch and artifacts named.
+  Caps stay hard budgets; unrecognized turns fall through to the loop path.
 
 ### Durability
 
@@ -255,7 +259,7 @@ src/
   state.ts          # durable goal record + tasks + pure transitions + archive keys
   command.ts        # /goal parsing (caps, --unbounded, --graph, tasks, history) + status formatting
   detect.ts         # repo-graph detection: agent/command registry first, .opencode fs fallback
-  graph.ts          # pure task-DAG helpers: dep validation/cycles, readyTasks, parallel groups
+  graph.ts          # pure task-DAG helpers: dep validation/cycles, readyTasks, parallel groups; failure-policy router (routeGraphSignal, AMBIGUITY_MARKER)
   rpc.ts            # goals.get / goals.updated for the widget (import-free)
   tui.tsx           # sidebar progress widget source (pre-compiled to dist/tui.js, the ./tui export)
   evidence.ts       # completion-evidence gate + user-request gate for goal_clear

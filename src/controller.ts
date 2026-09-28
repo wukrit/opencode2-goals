@@ -29,7 +29,7 @@ import { detectGraph } from "./detect"
 import { validateClearRequest, validateEvidence } from "./evidence"
 import { isPathInside } from "./permission"
 import { parseVerdict, readVerdictFile } from "./verdict"
-import { unmetDeps, resolveDepends, SOFT_NODE_WARN_COUNT, taskNumber, validateDepends } from "./graph"
+import { AMBIGUITY_MARKER, unmetDeps, resolveDepends, routeGraphSignal, SOFT_NODE_WARN_COUNT, taskNumber, validateDepends, type GraphSignal } from "./graph"
 import { resolveOptions, type Options } from "./options"
 import { decidePermission } from "./permission"
 import {
@@ -992,6 +992,17 @@ export class GoalController {
       return
     }
 
+    // Graph-mode verdict routing (issue #7) runs beside the loop path below:
+    // caps stay hard budgets, interrupts/control never route, and unrouted
+    // turns fall through to the standard stall/cap/continue logic untouched.
+    if (goal.graph?.mode === "graph") {
+      if (isCapReached(goal)) {
+        await this.limitGoal(goal, sessionID, eventID)
+        return
+      }
+      if (await this.routeGraphTurn(sessionID, goal, eventID)) return
+    }
+
     const madeToolCall = await this.executionMadeToolCall(sessionID)
     if (isContinuation && !madeToolCall) {
       goal.stalls += 1
@@ -1018,20 +1029,101 @@ export class GoalController {
     }
 
     if (isCapReached(goal)) {
-      goal.status = "budget_limited"
-      goal.outcome = "budget_limited"
-      goal.lastHandledEventID = eventID
-      await this.save(goal)
-      await this.notify(
-        sessionID,
-        `Goal ${goal.id} stopped at its budget cap (${capSummary(goal.cap)}). This is not completion. /goal resume to continue or /goal clear to remove.`,
-      )
+      await this.limitGoal(goal, sessionID, eventID)
       return
     }
 
     goal.lastHandledEventID = eventID
     await this.save(goal)
     await this.injectContinuation(goal)
+  }
+
+  /** Shared budget-cap terminal: distinct from completion and from blocked. */
+  private async limitGoal(goal: GoalRecord, sessionID: string, eventID: string | undefined): Promise<void> {
+    goal.status = "budget_limited"
+    goal.outcome = "budget_limited"
+    goal.lastHandledEventID = eventID
+    await this.save(goal)
+    await this.notify(
+      sessionID,
+      `Goal ${goal.id} stopped at its budget cap (${capSummary(goal.cap)}). This is not completion. /goal resume to continue or /goal clear to remove.`,
+    )
+  }
+
+  /**
+   * Graph-mode verdict routing (issue #7). Returns true when the turn was
+   * fully handled (pass, blocked, or remediated); false falls through to the
+   * standard loop path (unready phases with no classifiable signal).
+   */
+  private async routeGraphTurn(sessionID: string, goal: GoalRecord, eventID: string | undefined): Promise<boolean> {
+    const signal = await this.classifyGraphSignal(sessionID, goal)
+    if (!signal) return false
+    const graph = goal.graph!
+    const route = routeGraphSignal(graph, signal, this.options.graph.maxRemediations)
+    if (signal.kind === "verdict") {
+      graph.lastVerdict = `${signal.verdict.verdict} (P1 ${signal.verdict.p1}, gate ${signal.verdict.gate})`
+    }
+    if (route.block) {
+      goal.status = "blocked"
+      goal.outcome = "blocked"
+      goal.blocker = route.block
+      goal.lastHandledEventID = eventID
+      await this.save(goal)
+      await this.notify(sessionID, route.notice)
+      return true
+    }
+    if (route.remediate) {
+      graph.remediationsUsed += 1
+      graph.phase = "remediate"
+      goal.lastHandledEventID = eventID
+      await this.notify(sessionID, route.notice)
+      // injectContinuation saves the budget bump and advances remediate→verify.
+      await this.injectContinuation(goal)
+      return true
+    }
+    // Pass: set the decided phase explicitly and inject here (rather than
+    // falling through) so this turn sends the publish prompt exactly once.
+    // The cap check already ran before routing; stall accounting resumes
+    // next turn.
+    graph.phase = route.next
+    goal.lastHandledEventID = eventID
+    await this.notify(sessionID, route.notice)
+    await this.injectContinuation(goal)
+    return true
+  }
+
+  /**
+   * Signal classification, in priority order: explicit BLOCKED markers,
+   * ambiguity markers (narrow set — escalate, never retry), then the parsed
+   * verdict file in verify phase. Anything unrecognized returns undefined
+   * and the loop path continues the run.
+   */
+  private async classifyGraphSignal(sessionID: string, goal: GoalRecord): Promise<GraphSignal | undefined> {
+    const tail = await this.executionTail(sessionID)
+    let text = ""
+    for (const message of tail) {
+      if (message.type !== "assistant") continue
+      for (const part of message.content ?? []) {
+        if (part.type === "text" && part.text) text += `${part.text}\n`
+      }
+      if (message.text) text += `${message.text}\n`
+    }
+    const blocked = BLOCKED_MARKER.exec(text)
+    if (blocked) return { kind: "workerBlocked", reason: blocked[1]?.trim() || "model reported blocked" }
+    const lines = text.split("\n")
+    const flagged = lines.find((line) => AMBIGUITY_MARKER.test(line))
+    if (flagged) return { kind: "ambiguous", detail: flagged.trim().slice(0, 200) }
+    if (goal.graph?.phase !== "verify") return undefined
+    const dir = await this.sessionDirectory(sessionID)
+    if (!dir) return undefined
+    const path = await import("node:path")
+    const file = path.join(dir, ".opencode", "runs", goal.graph.runId, "verdict.md")
+    if (!isPathInside(file, dir)) return undefined
+    const read = await readVerdictFile(file)
+    if ("error" in read) return undefined
+    const parsed = parseVerdict(read.text)
+    if (!parsed.ok) return undefined
+    return { kind: "verdict", verdict: parsed, path: `.opencode/runs/${goal.graph.runId}/verdict.md` }
   }
 
   private async executionMadeToolCall(sessionID: string): Promise<boolean> {

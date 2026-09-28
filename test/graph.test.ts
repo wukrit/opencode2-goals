@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
-import { assistantWithTool, MockContext, userMessage } from "./harness"
+import { assistantText, assistantWithTool, MockContext, userMessage } from "./harness"
 import { DEFAULT_CONTINUATION_PROMPT } from "../src/controller"
 import { detectGraph } from "../src/detect"
 import { DEFAULT_GRAPH_OPTIONS } from "../src/options"
@@ -221,5 +221,186 @@ describe("graph-mode goals", () => {
       goal: { graph: { runId: string; phase: string } }
     }
     expect(roundTripped.goal.graph.phase).toBe("work")
+  })
+})
+
+describe("routeGraphSignal (pure)", () => {
+  const base = {
+    mode: "graph" as const,
+    runId: "graph-123-abc",
+    issue: "123",
+    phase: "verify" as const,
+    remediationsUsed: 0,
+    agents: ["graph-planner", "graph-worker", "graph-verifier"],
+  }
+  const passVerdict = {
+    ok: true as const,
+    verdict: "pass" as const,
+    gate: "pnpm verify — exit 0",
+    gateGreen: true,
+    p1: 0,
+    p2: 1,
+    p3: 0,
+    unproven: [] as string[],
+  }
+
+  test("pass routes to publish; fail routes to remediate then stops", async () => {
+    const { routeGraphSignal } = await import("../src/graph")
+    const pass = routeGraphSignal(base, { kind: "verdict", verdict: passVerdict, path: "v.md" }, 1)
+    expect(pass.next).toBe("publish")
+    expect(pass.remediate).toBe(false)
+    expect(pass.block).toBeUndefined()
+
+    const fail = routeGraphSignal(
+      base,
+      { kind: "verdict", verdict: { ...passVerdict, verdict: "fail", p1: 2 }, path: "v.md" },
+      1,
+    )
+    expect(fail.next).toBe("remediate")
+    expect(fail.remediate).toBe(true)
+    expect(fail.notice).toContain("1/1")
+
+    const spent = routeGraphSignal({ ...base, remediationsUsed: 1 }, { kind: "verdict", verdict: { ...passVerdict, verdict: "fail", p1: 2 }, path: "v.md" }, 1)
+    expect(spent.next).toBe("done")
+    expect(spent.block).toContain("remediation(s)")
+    expect(spent.notice).toContain("left in place")
+
+    const strict = routeGraphSignal(base, { kind: "verdict", verdict: { ...passVerdict, verdict: "fail" }, path: "v.md" }, 0)
+    expect(strict.block).toBeDefined()
+  })
+
+  test("blocked workers and ambiguity stop without spending budget", async () => {
+    const { routeGraphSignal } = await import("../src/graph")
+    const blocked = routeGraphSignal(base, { kind: "workerBlocked", reason: "Railway dashboard needed" }, 1)
+    expect(blocked.block).toBe("Railway dashboard needed")
+    expect(blocked.notice).toContain("last green node")
+
+    const ambiguous = routeGraphSignal(base, { kind: "ambiguous", detail: "plan is ambiguous" }, 1)
+    expect(ambiguous.block).toBe("plan is ambiguous")
+    expect(ambiguous.notice).toContain("ambiguity")
+  })
+})
+
+describe("failure-policy routing through real setup()", () => {
+  const verdictBody = (verdict: string, gate: string, p1: string, nodes: string): string =>
+    `# Verdict — run\nverdict: ${verdict}\ngate: ${gate}\n\n## Findings\n\n### P1 — must fix\n${p1}\n\n## Node acceptance\n${nodes}\n`
+
+  const PASS = verdictBody("pass", "pnpm verify — exit 0", "- No findings.", "- N1: proven by commit abc")
+  const FAIL = verdictBody(
+    "fail",
+    "pnpm verify — 1 failed",
+    "- a.ts:1 — bad — breaks prod",
+    "- N1: proven by commit abc\n- N2: not proven (no output)",
+  )
+
+  async function routedCtx(sessionID: string): Promise<{ ctx: MockContext; dir: string; runId: string }> {
+    const ctx = new MockContext()
+    await ctx.start()
+    fullRegistry(ctx)
+    const dir = mkdtempSync(join(tmpdir(), "goals-route-"))
+    tmpDirs.push(dir)
+    ctx.setSessionDirectory(sessionID, dir)
+    await ctx.callTool(sessionID, "goal_set", { objective: "Ship it", graph: "123" })
+    const runId = ctx.goal(sessionID)?.graph?.runId ?? ""
+    // Advance plan → work → verify with tool-calling turns.
+    await emitToolTurn(ctx, sessionID, `${sessionID}-w`)
+    expect(ctx.goal(sessionID)?.graph?.phase).toBe("verify")
+    return { ctx, dir, runId }
+  }
+
+  function writeVerdict(dir: string, runId: string, body: string): void {
+    const runDir = join(dir, ".opencode", "runs", runId)
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, "verdict.md"), body)
+  }
+
+  async function emitTextTurn(ctx: MockContext, sessionID: string, eventID: string, text: string): Promise<void> {
+    const goalID = ctx.goal(sessionID)?.id
+    await ctx.emit({
+      id: `evt_in_${eventID}`,
+      type: "session.inbox.enqueued",
+      data: {
+        sessionID,
+        inboxID: `msg_${eventID}`,
+        item: { type: "user", payload: { text: "continue", metadata: { goalContinuation: true, goalID } } },
+      },
+    } satisfies PluginEvent)
+    await ctx.emit({ id: `evt_start_${eventID}`, type: "session.execution.started", data: { sessionID } })
+    ctx.setMessages(sessionID, [
+      userMessage("msg_cont", { goalContinuation: true, goalID }),
+      assistantWithTool("msg_tool"),
+      assistantText("msg_text", text),
+    ])
+    await ctx.emit({ id: eventID, type: "session.execution.succeeded", data: { sessionID } } satisfies PluginEvent)
+  }
+
+  test("pass verdict routes to the publish prompt", async () => {
+    const { ctx, dir, runId } = await routedCtx("ses_route_pass")
+    writeVerdict(dir, runId, PASS)
+    await emitToolTurn(ctx, "ses_route_pass", "ses_route_pass-v")
+    expect(ctx.goal("ses_route_pass")?.status).toBe("active")
+    expect(ctx.goal("ses_route_pass")?.graph?.phase).toBe("done")
+    expect(ctx.goal("ses_route_pass")?.graph?.lastVerdict).toContain("pass")
+    const texts = ctx.promptsFor("ses_route_pass").map((p) => p.text)
+    expect(texts[texts.length - 1]).toContain("publish phase")
+    const notices = ctx.notices.map((n) => n.text).join("\n")
+    expect(notices).toContain("verdict pass")
+  })
+
+  test("fail remediates once, then blocks with both verdicts named", async () => {
+    const { ctx, dir, runId } = await routedCtx("ses_route_fail")
+    writeVerdict(dir, runId, FAIL)
+    await emitToolTurn(ctx, "ses_route_fail", "ses_route_fail-v1")
+    expect(ctx.goal("ses_route_fail")?.graph?.remediationsUsed).toBe(1)
+    expect(ctx.goal("ses_route_fail")?.graph?.phase).toBe("verify")
+    const remediation = ctx.promptsFor("ses_route_fail").map((p) => p.text).pop() ?? ""
+    expect(remediation).toContain("remediation phase")
+
+    writeVerdict(dir, runId, FAIL)
+    await emitToolTurn(ctx, "ses_route_fail", "ses_route_fail-v2")
+    const goal = ctx.goal("ses_route_fail")
+    expect(goal?.status).toBe("blocked")
+    expect(goal?.blocker).toContain("remediation(s)")
+    const stopNotice = ctx.notices[ctx.notices.length - 1]?.text ?? ""
+    expect(stopNotice).toContain(runId)
+    expect(stopNotice).toContain("left in place")
+
+    // No third attempt: another terminal event changes nothing.
+    const promptsBefore = ctx.promptsFor("ses_route_fail").length
+    await emitToolTurn(ctx, "ses_route_fail", "ses_route_fail-v3")
+    expect(ctx.promptsFor("ses_route_fail")).toHaveLength(promptsBefore)
+    expect(ctx.goal("ses_route_fail")?.status).toBe("blocked")
+  })
+
+  test("worker-blocked text stops the run without spending budget", async () => {
+    const { ctx } = await routedCtx("ses_route_blocked")
+    await emitTextTurn(ctx, "ses_route_blocked", "ses_route_blocked-b", "BLOCKED: Railway dashboard needed for DNS")
+    const goal = ctx.goal("ses_route_blocked")
+    expect(goal?.status).toBe("blocked")
+    expect(goal?.blocker).toContain("Railway dashboard")
+    expect(goal?.graph?.remediationsUsed).toBe(0)
+  })
+
+  test("ambiguity text escalates instead of retrying", async () => {
+    const { ctx } = await routedCtx("ses_route_amb")
+    await emitTextTurn(ctx, "ses_route_amb", "ses_route_amb-a", "the plan is ambiguous here, needs human decision")
+    const goal = ctx.goal("ses_route_amb")
+    expect(goal?.status).toBe("blocked")
+    expect(goal?.blocker).toContain("ambiguous")
+    const notice = ctx.notices[ctx.notices.length - 1]?.text ?? ""
+    expect(notice).toContain("ambiguity")
+  })
+
+  test("cap hit mid-graph reports budget_limited, never blocked", async () => {
+    const ctx = new MockContext()
+    await ctx.start()
+    fullRegistry(ctx)
+    const dir = mkdtempSync(join(tmpdir(), "goals-routecap-"))
+    tmpDirs.push(dir)
+    ctx.setSessionDirectory("ses_route_cap", dir)
+    await ctx.callTool("ses_route_cap", "goal_set", { objective: "Ship it", graph: "123", turns: 1 })
+    await emitToolTurn(ctx, "ses_route_cap", "ses_route_cap-1")
+    expect(ctx.goal("ses_route_cap")?.status).toBe("budget_limited")
+    expect(ctx.goal("ses_route_cap")?.outcome).toBe("budget_limited")
   })
 })

@@ -59,6 +59,8 @@ export type GoalGraph = {
   phase: GraphPhase
   remediationsUsed: number
   agents: string[]
+  /** One-line pointer to the latest parsed verdict (paths + P1 count + gate line live in files). */
+  lastVerdict?: string
 }
 
 /** Next orchestrator phase (optimistic per-continuation advancement). */

@@ -1,13 +1,16 @@
 /**
- * DAG helpers for goal tasks (issue #5).
+ * DAG helpers for goal tasks (issue #5) + failure-policy router (issue #7).
  *
  * Tasks are graph nodes; `depends` edges are ordering only — no parallel
- * execution, just readiness. Everything here is pure (no plugin context) so
- * the graph logic can be unit tested in isolation, mirroring `state.ts`.
+ * execution, just readiness. The router is the graph's conditional edge:
+ * `routeGraphSignal(state, signal) → next phase`, living in code rather than
+ * prompt prose. Everything here is pure (no plugin context) so the graph
+ * logic can be unit tested in isolation, mirroring `state.ts`.
  */
 
 import { resolveTaskRef } from "./state"
-import type { GoalTask } from "./state"
+import type { GoalGraph, GoalTask, GraphPhase } from "./state"
+import type { ParsedVerdict } from "./verdict"
 
 export const SOFT_NODE_WARN_COUNT = 7
 
@@ -95,6 +98,97 @@ export function resolveDepends(
 export function taskNumber(tasks: readonly GoalTask[], id: string): string {
   const index = tasks.findIndex((t) => t.id === id)
   return index >= 0 ? String(index + 1) : id.slice(-6)
+}
+
+/** Narrow, deliberate: anything matching escalates to a human, never to a retry. */
+export const AMBIGUITY_MARKER =
+  /\b(STRATEGY conflict|missing plan|needs human|human-only|railway dashboard|discord portal|prod secrets?|ambiguity|ambiguous)\b/i
+
+export type GraphSignal =
+  | { kind: "verdict"; verdict: Extract<ParsedVerdict, { ok: true }>; path: string }
+  | { kind: "workerBlocked"; reason: string }
+  | { kind: "ambiguous"; detail: string }
+
+export type GraphRoute = {
+  next: GraphPhase
+  /** True when the worker must be requeued (caller bumps remediationsUsed). */
+  remediate: boolean
+  /** Set when the run stops here (caller marks the goal blocked). */
+  block?: string
+  /** Human-facing notice: names run, verdict, gate, branch, artifacts. */
+  notice: string
+}
+
+function runDir(graph: GoalGraph): string {
+  return `.opencode/runs/${graph.runId}`
+}
+
+function branchNote(graph: GoalGraph): string {
+  return graph.branch ? `branch ${graph.branch}` : "branch (unknown — worker owns creation)"
+}
+
+function verdictSummary(graph: GoalGraph, verdict: Extract<ParsedVerdict, { ok: true }>, path: string): string {
+  return `${verdict.verdict} (P1 ${verdict.p1}, gate ${verdict.gate}) in ${path}`
+}
+
+/**
+ * Failure-policy routing table as code (issue #7):
+ * pass → publish; fail + budget → remediate once; fail + spent, blocked
+ * workers, and ambiguity → stop with branch + artifacts in place.
+ */
+export function routeGraphSignal(graph: GoalGraph, signal: GraphSignal, maxRemediations: number): GraphRoute {
+  if (signal.kind === "workerBlocked") {
+    return {
+      next: "done",
+      remediate: false,
+      block: signal.reason,
+      notice:
+        `Graph ${graph.runId} blocked: ${signal.reason}. ` +
+        `${branchNote(graph)} left at the last green node; artifacts in ${runDir(graph)}.`,
+    }
+  }
+  if (signal.kind === "ambiguous") {
+    return {
+      next: "done",
+      remediate: false,
+      block: signal.detail,
+      notice:
+        `Graph ${graph.runId} blocked on ambiguity: ${signal.detail}. ` +
+        `${branchNote(graph)} and artifacts in ${runDir(graph)} left in place — user decision needed.`,
+    }
+  }
+  const summary = verdictSummary(graph, signal.verdict, signal.path)
+  const failed =
+    signal.verdict.verdict !== "pass" ||
+    !signal.verdict.gateGreen ||
+    signal.verdict.p1 > 0 ||
+    signal.verdict.unproven.length > 0
+  if (!failed) {
+    return {
+      next: "publish",
+      remediate: false,
+      notice: `Graph ${graph.runId}: verdict pass (${summary}). Proceeding to publish.`,
+    }
+  }
+  if (graph.remediationsUsed < maxRemediations) {
+    const used = graph.remediationsUsed + 1
+    return {
+      next: "remediate",
+      remediate: true,
+      notice:
+        `Graph ${graph.runId}: verdict fail (${summary}) — remediation ${used}/${maxRemediations} started. ` +
+        `Worker requeued with P1/P2 findings only; verdict ${graph.lastVerdict ? `(previous: ${graph.lastVerdict}) ` : ""}and branch left in place.`,
+    }
+  }
+  return {
+    next: "done",
+    remediate: false,
+    block: `verdict failed after ${graph.remediationsUsed} remediation(s): ${summary}${graph.lastVerdict ? ` (previous: ${graph.lastVerdict})` : ""}`,
+    notice:
+      `Graph ${graph.runId} stopped: verdict failed after ${graph.remediationsUsed} remediation(s) ` +
+      `(latest: ${summary}${graph.lastVerdict ? `; previous: ${graph.lastVerdict}` : ""}). ` +
+      `${branchNote(graph)} and artifacts in ${runDir(graph)} left in place — user decision needed.`,
+  }
 }
 
 /**

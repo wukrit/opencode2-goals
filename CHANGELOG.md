@@ -8,6 +8,13 @@ are extracted from the matching section of this file by the release workflow.
 ## [Unreleased]
 
 ### Added
+- Failure-policy routing (issue #7, Graph-aware goals milestone): pure
+  `routeGraphSignal` router in `src/graph.ts` (pass → publish, fail + budget
+  → remediate once, spent budget / worker-blocked / narrow ambiguity markers
+  → `blocked`), wired into `onTerminal` beside the untouched loop path;
+  `maxRemediations` budget (default 1), `lastVerdict` pointer on the graph
+  record, and notification discipline naming run, verdict, gate, branch, and
+  artifact paths. Caps stay hard budgets (`budget_limited`, never `blocked`).
 - Verdict-gated completion (issue #6, Graph-aware goals milestone): `src/verdict.ts`
   parses the run's `verdict.md` (pass/fail, gate green/red token matrix,
   P1/P2/P3 counts, per-node proven list); graph-mode `goal_complete` / `/goal
