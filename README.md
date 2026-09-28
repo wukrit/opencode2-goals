@@ -98,7 +98,7 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 ```
 
 Shorthand works too (`"plugins": ["opencode2-goals"]`), but **prefer pinning**:
-`"opencode2-goals@1.0.3"`. The host's `@latest` resolution caches aggressively
+`"opencode2-goals@1.0.4"`. The host's `@latest` resolution caches aggressively
 and may keep serving an older version for a while after a publish, so a pin
 also gives you a knowingly-upgradeable install. (`npm view opencode2-goals
 version` shows the current release. And note the `2`: the legacy npm name
