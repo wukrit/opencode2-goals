@@ -69,6 +69,11 @@ git tag v1.0.4 && git push origin v1.0.4
 `.github/workflows/release.yml` verifies the tag matches `package.json`,
 runs typecheck + tests, publishes to npm with **OIDC provenance** (`prepack`
 rebuilds the widget), and creates the GitHub release with notes pulled from
-`CHANGELOG.md`. If the first provenance publish 401s, enable trusted
-publishing for this repo/workflow on the package's npm "Publishing access"
-page.
+`CHANGELOG.md`. 
+
+**One-time npm setup:** npm does not auto-register trusted publishers — the
+first CI publish 401s/`ENEEDAUTH`s until you enable it on
+npmjs.com → the package → **Access** tab → *Trusted publishing*: owner
+`wukrit`, repository `opencode2-goals`, workflow name `release.yml`.
+Optionally also toggle *provenance: required* so everything after is provable.
+Then re-run the failed release job: `gh run rerun <run-id>`.

@@ -231,6 +231,11 @@ git tag v1.0.4 && git push origin v1.0.4
 Full flow and the trusted-publishing caveat are in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+> **First CI publish:** npm does *not* auto-register trusted publishers.
+> Enable it once on npmjs.com → package → **Access** tab → *Trusted publishing*
+> → add owner `wukrit`, repo `opencode2-goals`, workflow `release.yml`.
+> Until then `npm publish --provenance` fails with `ENEEDAUTH`.
+
 ## Layout
 
 ```
