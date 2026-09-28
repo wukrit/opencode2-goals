@@ -3,7 +3,7 @@ import type { PluginContext } from "./types"
 export type Options = {
   /** Consecutive tool-less continuation turns tolerated before the goal stalls. */
   stallLimit: number
-  /** Extra text appended to the injected continuation prompt. */
+  /** Replaces the default continuation prompt when set. */
   continuationText: string | undefined
   /** Default turn cap applied when `/goal set` gives no explicit cap. */
   defaultCapTurns: number
