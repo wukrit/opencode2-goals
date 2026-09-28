@@ -25,6 +25,7 @@
  */
 
 import { formatGoal, formatGoalHistory, parseGoalCommand, type GoalCommand } from "./command"
+import { detectGraph, type GraphDetection } from "./detect"
 import { validateClearRequest, validateEvidence } from "./evidence"
 import { unmetDeps, resolveDepends, SOFT_NODE_WARN_COUNT, taskNumber, validateDepends } from "./graph"
 import { resolveOptions, type Options } from "./options"
@@ -38,9 +39,11 @@ import {
   isCapReached,
   isTerminal,
   nextTaskID,
+  nextGraphPhase,
   normalizeGoal,
   resolveTaskRef,
   type GoalCap,
+  type GoalGraph,
   type GoalRecord,
   type GoalTask,
   type GoalTaskStatus,
@@ -97,7 +100,7 @@ export class GoalController {
       editor.add({
         name: "goal_set",
         description:
-          "Set the active goal for this session and start the continuation loop. Use only when the user explicitly asks you to set a goal. Refuses while a non-terminal goal is active — finish it with goal_complete/goal_block first.",
+          "Set the active goal for this session and start the continuation loop. Use only when the user explicitly asks you to set a goal. Refuses while a non-terminal goal is active — finish it with goal_complete/goal_block first. Pass `graph` (issue number/URL) to orchestrate a detected repo graph instead of looping.",
         input: {
           type: "object",
           properties: {
@@ -105,6 +108,7 @@ export class GoalController {
             turns: { type: "number", description: "Optional continuation-turn cap (default: configured cap)." },
             tokens: { type: "number", description: "Optional token cap (default: configured cap)." },
             unbounded: { type: "boolean", description: "Opt out of caps entirely. Rarely right; prefer explicit caps." },
+            graph: { type: "string", description: "Issue number/URL to run through the repo's agent graph (refused when no graph is detected)." },
           },
           required: ["objective"],
           additionalProperties: false,
@@ -325,7 +329,14 @@ export class GoalController {
         if (goal && !isTerminal(goal.status)) {
           await this.archive(goal)
         }
+        let graphInit: GoalGraph | undefined
+        if (command.graph !== undefined) {
+          const started = await this.startGraphOrRefuse(sessionID, command.graph)
+          if (!started) return
+          graphInit = started
+        }
         const created = createGoal({ sessionID, objective: command.objective, cap })
+        if (graphInit) created.graph = graphInit
         await this.save(created)
         await this.injectContinuation(created)
         return
@@ -520,10 +531,58 @@ export class GoalController {
     const turns = typeof input?.turns === "number" ? Math.max(1, Math.floor(input.turns)) : undefined
     const tokens = typeof input?.tokens === "number" ? Math.max(1, Math.floor(input.tokens)) : undefined
     const cap = this.effectiveCap({ kind: "set", objective, cap: { turns, tokens }, unbounded: input?.unbounded === true })
+    const graphRaw = input?.graph
+    let graphInit: GoalGraph | undefined
+    if (graphRaw !== undefined) {
+      const issue = graphRaw === true ? "" : String(graphRaw ?? "").trim()
+      const started = await this.startGraphOrRefuse(context.sessionID, issue)
+      if (!started) {
+        return {
+          content: `Goal NOT set: no repo graph detected (looked for ${this.options.graph.agents.join(", ")} + .opencode graph files). Drop \`graph\` for a loop goal, or add the repo graph first.`,
+        }
+      }
+      graphInit = started
+    }
     const created = createGoal({ sessionID: context.sessionID, objective, cap })
+    if (graphInit) created.graph = graphInit
     await this.save(created)
     await this.injectContinuation(created)
     return { content: `Goal ${created.id} set: ${created.objective} (cap: ${capSummary(created.cap)}).` }
+  }
+
+  /**
+   * Resolve a graph-mode request against detection. Returns the proposed
+   * `GoalGraph`, or undefined after notifying the refusal (explicit: never a
+   * silent downgrade to loop).
+   */
+  private async startGraphOrRefuse(sessionID: string, issue: string): Promise<GoalGraph | undefined> {
+    const detection = await detectGraph(this.ctx, this.options.graph)
+    if (!detection.present) {
+      await this.notify(
+        sessionID,
+        `Graph NOT started: no repo graph detected (looked for ${this.options.graph.agents.join(", ")} + .opencode graph files). ` +
+          `Retry without --graph for a loop goal, or add the repo graph first.`,
+      )
+      return undefined
+    }
+    const slug =
+      issue.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "no-issue"
+    const graph: GoalGraph = {
+      mode: "graph",
+      runId: `graph-${slug}-${Date.now().toString(36)}`,
+      issue: issue.trim(),
+      phase: "plan",
+      remediationsUsed: 0,
+      agents: detection.agents.length > 0 ? detection.agents : [...this.options.graph.agents],
+    }
+    if (detection.missing.length > 0) {
+      await this.notify(
+        sessionID,
+        `Graph mode with partial roles (missing: ${detection.missing.join(", ")}). ` +
+          `The orchestrator must work around the gap or escalate via goal_block — never guess.`,
+      )
+    }
+    return graph
   }
 
   async onGoalBlock(input: Record<string, unknown>, context: ToolContext): Promise<{ content: string }> {
@@ -669,6 +728,13 @@ export class GoalController {
       "Call goal_block(reason) if you cannot proceed, including when a file or directory you need is outside the session working directory and access is denied.",
       "Stay inside the session working directory. Requests outside it are denied automatically.",
     ]
+    if (goal.graph?.mode === "graph") {
+      lines.push(
+        `You are the graph ORCHESTRATOR (run ${goal.graph.runId}, phase ${goal.graph.phase}), not a worker.`,
+        `Delegate through the Task/subagent tool to the repo roles (${goal.graph.agents.join(", ")}); never implement, review, or verify the work yourself.`,
+        "Ambiguity, missing plans, strategy conflicts, and human-only boundaries stop the run: call goal_block — never guess.",
+      )
+    }
     return lines.join("\n")
   }
 
@@ -936,9 +1002,16 @@ export class GoalController {
     if (goal.status !== "active") return
     goal.continuations += 1
     goal.used.turns += 1
+    const text = this.continuationTextFor(goal)
+    // Optimistic phase advancement: each continuation moves the orchestrator
+    // one phase forward. Phase prompts are idempotent (artifact-presence
+    // guards), so a phase that needs two turns simply repeats safely.
+    // Verdict-driven routing (remediate loop) lands in #7.
+    if (goal.graph?.mode === "graph") {
+      goal.graph.phase = nextGraphPhase(goal.graph.phase)
+    }
     await this.save(goal)
     this.continuationPending.add(goal.sessionID)
-    const text = this.options.continuationText ?? DEFAULT_CONTINUATION_PROMPT
     try {
       await this.ctx.session.prompt({
         sessionID: goal.sessionID,
@@ -949,6 +1022,58 @@ export class GoalController {
       })
     } catch {
       this.continuationPending.delete(goal.sessionID)
+    }
+  }
+
+  /** Loop prompt by default; phase-specific orchestrator prompt in graph mode. */
+  private continuationTextFor(goal: GoalRecord): string {
+    if (goal.graph?.mode === "graph" && this.options.continuationText === undefined) {
+      return this.graphContinuationPrompt(goal, goal.graph)
+    }
+    return this.options.continuationText ?? DEFAULT_CONTINUATION_PROMPT
+  }
+
+  private graphContinuationPrompt(goal: GoalRecord, graph: GoalGraph): string {
+    const [planner, worker, verifier] = [graph.agents[0], graph.agents[1], graph.agents[2]]
+    const run = `.opencode/runs/${graph.runId}`
+    const delegate = `Delegate through the Task/subagent tool to the repo role; do not implement, review, or verify the work yourself.`
+    const guard = `If the role reports ambiguity, a missing plan, a strategy conflict, or a human-only boundary, call goal_block with the specific reason — never guess.`
+    const close = "End this turn by calling a tool."
+    switch (graph.phase) {
+      case "plan":
+        return (
+          `Graph orchestrator (plan phase, run ${graph.runId}, issue ${graph.issue || "(unspecified)"}). ` +
+          `First check: does ${run}/graph.md exist? If not, launch the ${planner} subagent (issue, run-id, "produce graph.md per your contract"). ` +
+          `${delegate} ${guard} ${close}`
+        )
+      case "work":
+        return (
+          `Graph orchestrator (work phase, run ${graph.runId}). ` +
+          `First check: does ${run}/graph.md exist? If not, you are still in plan phase — produce it before anything else. ` +
+          `Otherwise launch the ${worker} subagent to execute graph.md node by node (one commit per node) until ${run}/report.md exists. ` +
+          `${delegate} If the worker reports blocked, call goal_block with its reason. ${close}`
+        )
+      case "verify":
+        return (
+          `Graph orchestrator (verify phase, run ${graph.runId}). ` +
+          `First check: does ${run}/report.md exist? If not, you are still in work phase. ` +
+          `Otherwise launch the ${verifier} subagent to audit the branch (its own gate run) until ${run}/verdict.md exists. ` +
+          `${delegate} ${guard} ${close}`
+        )
+      case "remediate":
+        return (
+          `Graph orchestrator (remediation phase, run ${graph.runId}). ` +
+          `Relaunch the ${worker} subagent with the verdict's P1/P2 findings quoted verbatim ("fix only these; do not expand scope"), then re-verify. ` +
+          `This budget is spent by #7 routing; if the findings are exhausted or ambiguous, call goal_block. ${close}`
+        )
+      case "publish":
+        return (
+          `Graph orchestrator (publish phase, run ${graph.runId}). ` +
+          `On verdict pass, open or update the PR per repo rules (never merge; humans merge). ` +
+          `Then call goal_complete with the verdict path + gate result as evidence. If the verdict failed, call goal_block with the P1 summary. ${close}`
+        )
+      case "done":
+        return DEFAULT_CONTINUATION_PROMPT
     }
   }
 

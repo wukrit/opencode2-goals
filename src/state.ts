@@ -44,6 +44,41 @@ export type GoalTask = {
   note?: string
 }
 
+/** Orchestrator phase for graph-mode goals (issue #4). `remediate` is driven by #7 routing. */
+export type GraphPhase = "plan" | "work" | "verify" | "remediate" | "publish" | "done"
+
+export type GoalGraph = {
+  /** Loop is the default; graph is always an explicit opt-in per run. */
+  mode: "loop" | "graph"
+  /** Proposed run id (`graph-<issue>-<ts>`); the repo command owns the canonical id. */
+  runId: string
+  /** Issue reference the graph runs on (number or URL text). */
+  issue: string
+  /** Branch is recorded when known; the worker owns branch creation. */
+  branch?: string
+  phase: GraphPhase
+  remediationsUsed: number
+  agents: string[]
+}
+
+/** Next orchestrator phase (optimistic per-continuation advancement). */
+export function nextGraphPhase(phase: GraphPhase): GraphPhase {
+  switch (phase) {
+    case "plan":
+      return "work"
+    case "work":
+      return "verify"
+    case "verify":
+      return "publish"
+    case "remediate":
+      return "verify"
+    case "publish":
+      return "done"
+    case "done":
+      return "done"
+  }
+}
+
 export type GoalRecord = {
   /** Durable schema marker, so a reload can migrate old records. */
   version: 1
@@ -62,6 +97,8 @@ export type GoalRecord = {
   continuations: number
   /** Ordered task breakdown for the progress widget. Empty = untracked. */
   tasks: GoalTask[]
+  /** Graph orchestration state. Absent = loop mode (the default). */
+  graph?: GoalGraph
   evidence?: string
   blocker?: string
   outcome?: GoalOutcome

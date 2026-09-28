@@ -19,6 +19,7 @@ progress widget in the sidebar.
 | Command | Effect |
 | --- | --- |
 | `/goal set <objective> [--turns N] [--tokens N] [--unbounded]` | Start the loop. No flags = **10-turn / 100,000-token cap**; `--unbounded` (also `--no-cap`, `--unlimited`) opts out of numeric limits. |
+| `/goal set <objective> --graph <issue>` | Start in graph-orchestrator mode for a detected repo graph (refused when none is found; `--no-graph` forces loop). |
 | `/goal view` | Full state: status, budget usage, tasks, evidence, outcome. |
 | `/goal pause` / `/goal resume` | Halt or re-arm continuation without losing state. |
 | `/goal complete <evidence>` / `/goal block <reason>` | Terminal outcomes, same gates as the tools below. |
@@ -34,7 +35,7 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 
 | Tool | Gate |
 | --- | --- |
-| `goal_set(objective, turns?, tokens?, unbounded?)` | Refuses while a non-terminal goal exists — the model can't clobber yours, and cap defaults match `/goal set`. |
+| `goal_set(objective, turns?, tokens?, unbounded?, graph?)` | Refuses while a non-terminal goal exists — the model can't clobber yours, and cap defaults match `/goal set`. `graph` (issue number/URL) switches to orchestrator mode when a repo graph is detected. |
 | `goal_complete(evidence)` | Evidence ≥24 chars with a checkable anchor (path, number, test result), grounded in transcript tokens when history is available. Weak claims are rejected; the goal stays `active`. |
 | `goal_block(reason)` | Requires a specific reason; the sanctioned "I can't proceed" exit. |
 | `goal_clear(request)` | Must quote the user's own clearing ask, grounded against **non-assistant** transcript text — assistant prose can't launder it, and no transcript fails closed. |
@@ -123,14 +124,21 @@ With options (all optional):
     "stallLimit": 1,
     "defaultCapTurns": 10,
     "defaultCapTokens": 100000,
-    "continuationText": "Continue the goal. End the turn with a tool call."
+    "continuationText": "Continue the goal. End the turn with a tool call.",
+    "graph": { "mode": "auto", "command": "graph-run", "agents": ["graph-planner", "graph-worker", "graph-verifier"], "maxRemediations": 1 }
   }
 }
 ```
 
 `continuationText` replaces the default continuation prompt (the message
 injected at each turn boundary); the other options set the stall tolerance and
-the default caps that `/goal set` applies when no flags are given.
+the default caps that `/goal set` applies when no flags are given. `graph`
+configures repo-graph orchestration (issue #4): `mode: "auto"` uses a detected
+graph when the goal opts in (`--graph` / `graph` param), `"off"` never does;
+`command`/`agents` name the expected orchestrator command and role agents
+(registry first, `.opencode` files as fallback); `maxRemediations` is stored
+for the failure-policy routing in #7. Loop stays the default — graph is
+always an explicit opt-in per run.
 
 Then reload locations:
 
@@ -245,7 +253,8 @@ tui.tsx             # top-level TUI shim (re-exports src/tui.tsx for directory-i
 src/
   controller.ts     # the goal loop (commands, tools, hooks, events, permission sandbox, goal archive)
   state.ts          # durable goal record + tasks + pure transitions + archive keys
-  command.ts        # /goal parsing (caps, --unbounded, tasks, history) + status formatting
+  command.ts        # /goal parsing (caps, --unbounded, --graph, tasks, history) + status formatting
+  detect.ts         # repo-graph detection: agent/command registry first, .opencode fs fallback
   graph.ts          # pure task-DAG helpers: dep validation/cycles, readyTasks, parallel groups
   rpc.ts            # goals.get / goals.updated for the widget (import-free)
   tui.tsx           # sidebar progress widget source (pre-compiled to dist/tui.js, the ./tui export)

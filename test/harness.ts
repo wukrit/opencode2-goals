@@ -91,6 +91,17 @@ export class MockContext {
   readonly prompts: Array<{ sessionID: string; text: string; metadata?: Record<string, unknown>; delivery?: string }> = []
   readonly notices: Array<{ sessionID: string; text: string; metadata?: Record<string, unknown> }> = []
 
+  /** Registry seam: undefined = older host without the surface (detection falls back to fs). */
+  registryAgents: Array<{ id: string }> | undefined = undefined
+  registryCommands: Array<{ name: string }> | undefined = undefined
+
+  agent = {
+    list: async (): Promise<Array<{ id: string }>> => {
+      if (this.registryAgents === undefined) throw new Error("agent registry unavailable")
+      return this.registryAgents
+    },
+  }
+
   private readonly commandDefs = new Map<string, (input: CommandInvocation) => Promise<void>>()
   private readonly toolDefs = new Map<string, ToolDefinition>()
   private contextHook: ((event: SessionContextHookEvent) => Promise<void> | void) | null = null
@@ -188,6 +199,10 @@ export class MockContext {
       }
       callback(editor)
       return { dispose: async () => {} }
+    },
+    list: async (): Promise<Array<{ name: string }>> => {
+      if (this.registryCommands === undefined) throw new Error("command registry unavailable")
+      return this.registryCommands
     },
   }
 

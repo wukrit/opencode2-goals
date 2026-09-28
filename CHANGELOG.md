@@ -8,6 +8,13 @@ are extracted from the matching section of this file by the release workflow.
 ## [Unreleased]
 
 ### Added
+- Repo-graph orchestration (issue #4, Graph-aware goals milestone):
+  `detectGraph` (agent/command registry first, `.opencode` fs fallback),
+  `GoalRecord.graph` phase machine (`plan → work → verify → publish`, plus
+  `remediate` for #7 routing), phase-specific orchestrator continuations with
+  artifact-presence guards, and `--graph <issue>` / `graph` opt-in on `/goal
+  set` and `goal_set` (explicit refusal when no graph is detected — never a
+  silent downgrade). Loop prompts are byte-identical when graph mode is off.
 - Goal tasks are a DAG (issue #5, Graph-aware goals milestone): `depends`
   (ordering edges), `acceptance`, `verify`, per-node `evidence`, `note`, and
   an explicit `blocked` status. `goal_add_task` takes `depends`/`acceptance`/

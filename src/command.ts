@@ -11,7 +11,7 @@ import { parallelGroups, taskNumber } from "./graph"
 
 export type GoalCommand =
   | { kind: "view" }
-  | { kind: "set"; objective: string; cap: GoalCap; unbounded: boolean }
+  | { kind: "set"; objective: string; cap: GoalCap; unbounded: boolean; graph?: string }
   | { kind: "pause" }
   | { kind: "resume" }
   | { kind: "clear" }
@@ -57,6 +57,40 @@ function parseCap(tokens: string[]): { cap: GoalCap; rest: string[]; unbounded: 
   return { cap, rest, unbounded }
 }
 
+/**
+ * Extract `--graph <issue>` / `--graph=<issue>` / bare `--graph` (issue
+ * unspecified) and `--no-graph` from tokens left over by `parseCap`.
+ */
+function parseGraphFlag(tokens: string[]): { graph?: string; rest: string[] } {
+  let graph: string | undefined
+  const rest: string[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!
+    const lower = token.toLowerCase()
+    if (lower === "--no-graph") {
+      graph = undefined
+      continue
+    }
+    const eq = /^--graph=(.*)$/.exec(token)
+    if (eq) {
+      graph = eq[1]!.trim()
+      continue
+    }
+    if (lower === "--graph") {
+      const next = tokens[i + 1]
+      if (next !== undefined && !next.startsWith("--")) {
+        graph = next.trim()
+        i++
+      } else {
+        graph = ""
+      }
+      continue
+    }
+    rest.push(token)
+  }
+  return graph === undefined ? { rest } : { graph, rest }
+}
+
 export function parseGoalCommand(raw: string): GoalCommand {
   const text = (raw ?? "").trim()
   if (!text) return { kind: "view" }
@@ -67,7 +101,15 @@ export function parseGoalCommand(raw: string): GoalCommand {
 
   if (!VERBS.has(head)) {
     const { cap, rest, unbounded } = parseCap(text.split(/\s+/))
-    return { kind: "set", objective: rest.join(" ").trim(), cap, unbounded }
+    const { graph, rest: objectiveTokens } = parseGraphFlag(rest)
+    const set: Extract<GoalCommand, { kind: "set" }> = {
+      kind: "set",
+      objective: objectiveTokens.join(" ").trim(),
+      cap,
+      unbounded,
+    }
+    if (graph !== undefined) set.graph = graph
+    return set
   }
 
   switch (head) {
@@ -94,7 +136,15 @@ export function parseGoalCommand(raw: string): GoalCommand {
       return { kind: "block", reason: tail }
     case "set": {
       const { cap, rest, unbounded } = parseCap(tail.split(/\s+/))
-      return { kind: "set", objective: rest.join(" ").trim(), cap, unbounded }
+      const { graph, rest: objectiveTokens } = parseGraphFlag(rest)
+      const set: Extract<GoalCommand, { kind: "set" }> = {
+        kind: "set",
+        objective: objectiveTokens.join(" ").trim(),
+        cap,
+        unbounded,
+      }
+      if (graph !== undefined) set.graph = graph
+      return set
     }
     default:
       return { kind: "view" }
@@ -214,6 +264,9 @@ export function formatGoal(goal: GoalRecord | undefined, sessionID: string): str
     `Status: ${goal.status}`,
     `Continuations: ${goal.continuations} · stalls: ${goal.stalls} · cap: ${capSummary(goal.cap)} · used: ${goal.used.turns} turns, ${goal.used.tokens} tokens`,
   ]
+  if (goal.graph?.mode === "graph") {
+    lines.push(`Graph: phase ${goal.graph.phase} · run ${goal.graph.runId} · issue ${goal.graph.issue || "(unspecified)"}`)
+  }
   if (tasks.length > 0) {
     lines.push(
       `Tasks: ${counts.done}/${counts.total} done${counts.doing > 0 ? ` · ${counts.doing} doing` : ""}${counts.blocked > 0 ? ` · ${counts.blocked} blocked` : ""}`,
