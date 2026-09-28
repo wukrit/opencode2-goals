@@ -131,6 +131,12 @@ function GoalWidget(props: { sessionID: string }) {
                 <text fg={context.theme.text.base}>{"Status:".padEnd(8)}</text>
                 <text fg={ink(statusColor())}>{goal().status}</text>
               </box>
+              <Show when={goal().graph?.mode === "graph"}>
+                <box flexDirection="row">
+                  <text fg={context.theme.text.base}>{"Phase:".padEnd(8)}</text>
+                  <text fg={context.theme.text.base}>{goal().graph?.phase}</text>
+                </box>
+              </Show>
               <For each={counterRows()}>
                 {(line) => <text fg={context.theme.text.base}>{line}</text>}
               </For>

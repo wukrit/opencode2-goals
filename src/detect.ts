@@ -25,8 +25,6 @@ export type GraphDetection = {
   via: "registry" | "fs" | "both" | "none"
 }
 
-const ROLE_FILES = ["graph-planner", "graph-worker", "graph-verifier"] as const
-
 function pickAgents(found: readonly string[], expected: readonly string[]): string[] {
   const lower = new Set(found.map((f) => f.toLowerCase()))
   return expected.filter((e) => lower.has(e.toLowerCase()))
@@ -51,12 +49,16 @@ async function registrySignal(
   }
 }
 
-async function fsSignal(directory: string | undefined): Promise<{ agents: string[]; command: boolean } | undefined> {
+async function fsSignal(
+  directory: string | undefined,
+  expectedAgents: readonly string[],
+): Promise<{ agents: string[]; command: boolean } | undefined> {
   if (!directory) return undefined
   try {
     const fs = await import("node:fs")
     const path = await import("node:path")
-    const agents = ROLE_FILES.filter((role) => {
+    // Filenames follow agent ids by convention (<id>.md).
+    const agents = expectedAgents.filter((role) => {
       try {
         return fs.existsSync(path.join(directory, ".opencode", "agents", `${role}.md`))
       } catch {
@@ -78,7 +80,10 @@ async function fsSignal(directory: string | undefined): Promise<{ agents: string
 export async function detectGraph(ctx: PluginContext, options: GraphOptions): Promise<GraphDetection> {
   const empty: GraphDetection = { full: false, present: false, agents: [], command: false, missing: [...options.agents], via: "none" }
   if (options.mode === "off") return empty
-  const [registry, fs] = await Promise.all([registrySignal(ctx, options.command), fsSignal(ctx.location?.directory)])
+  const [registry, fs] = await Promise.all([
+    registrySignal(ctx, options.command),
+    fsSignal(ctx.location?.directory, options.agents),
+  ])
   if (!registry && !fs) return empty
   const seen = new Set<string>()
   for (const id of [...(registry?.agents ?? []), ...(fs?.agents ?? [])]) seen.add(id)
