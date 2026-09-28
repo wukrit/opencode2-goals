@@ -50,7 +50,7 @@ boundaries, `session.usage.updated`) or hook surfaces, run
 
 ## Demo GIF
 
-`docs/demo.gif` is generated, not hand-recorded: the VHS tape and the
+`demo.gif` (repo root) is generated, not hand-recorded: the VHS tape and the
 isolated-environment script that drive it are **maintainer-local and
 gitignored** (`scripts/demo.tape`, `scripts/demo-env.sh`) because they encode
 machine-specific provider setup. If the widget or command UX changes

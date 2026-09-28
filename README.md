@@ -10,7 +10,7 @@ continuation on turn boundaries; an evidence-gated completion tool; stall suppre
 budget caps safe by default; an unattended permission sandbox; and a live TUI
 progress widget in the sidebar.
 
-![The goal loop in the OpenCode TUI: /goal commands drive a durable goal whose live status, budget counters, and task breakdown render in the sidebar](docs/demo.gif)
+![The goal loop in the OpenCode TUI: /goal commands drive a durable goal whose live status, budget counters, and task breakdown render in the sidebar](demo.gif)
 
 ## What it does
 
@@ -240,6 +240,7 @@ Full flow and the trusted-publishing caveat are in
 
 ```
 index.ts            # loader entry: { id, setup } + goals RPC
+demo.gif            # goal-loop demo for the README (recording flow in CONTRIBUTING)
 tui.tsx             # top-level TUI shim (re-exports src/tui.tsx for directory-install discovery)
 src/
   controller.ts     # the goal loop (commands, tools, hooks, events, permission sandbox, goal archive)
