@@ -26,3 +26,20 @@ jobs:
         run: bun add -d "@opencode/plugin@^2.0.0"
       - run: bun run typecheck
       - run: bun test
+
+  live-smoke:
+    name: Load the plugin in a real host (latest CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the latest OpenCode v2 CLI
+        run: npm install -g @opencode/cli@latest
+      - run: bun install --frozen-lockfile
+      - name: Boot an isolated server and assert /goal is registered
+        run: bash scripts/live-smoke.sh

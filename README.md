@@ -75,10 +75,11 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 ## Requirements
 
 - OpenCode v2 (`@opencode/plugin` 2.x). Built and live-verified on
-  **2.0.15/2.0.16** (npm install, directory install, and the TUI widget); the
-  type surface and event model are re-checked against the **latest 2.x weekly**
-  in CI ([Host compatibility](.github/workflows/compat.yml) — run it manually
-  any time with `gh workflow run compat.yml`).
+  **2.0.15/2.0.16** (npm install, directory install, and the TUI widget);
+  weekly CI ([Host compatibility](.github/workflows/compat.yml)) re-checks the
+  type surface against the **latest 2.x** *and* boots a real isolated host to
+  verify the plugin still loads. Run it any time with
+  `gh workflow run compat.yml`.
 - Bun, for tests, typecheck, and building the widget entry.
 
 ## Install
@@ -247,6 +248,7 @@ dist/
   tui.js            # built widget (gitignored; produced by scripts/build-tui.ts)
 scripts/
   build-tui.ts      # compiles src/tui.tsx with the host's own @opentui/solid bun-plugin
+  live-smoke.sh     # boots an isolated real host and asserts /goal is registered (no model call)
   logcheck.py       # timestamp-accurate plugin-load verification against the opencode log
 test/
   harness.ts        # mocked context + deterministic event bus (+ permission hook)
