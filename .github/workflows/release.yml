@@ -38,8 +38,12 @@ jobs:
       - run: bun test
 
       # prepack rebuilds dist/tui.js via scripts/build-tui.ts before packing.
+      - name: Publish diagnostics
+        run: |
+          npm --version
+          node -e "console.log('id-token available:', !!process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN)"
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --loglevel silly
 
       - name: Extract changelog notes for this tag
         run: |
