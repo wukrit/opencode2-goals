@@ -8,6 +8,13 @@ are extracted from the matching section of this file by the release workflow.
 ## [Unreleased]
 
 ### Added
+- Verdict-gated completion (issue #6, Graph-aware goals milestone): `src/verdict.ts`
+  parses the run's `verdict.md` (pass/fail, gate green/red token matrix,
+  P1/P2/P3 counts, per-node proven list); graph-mode `goal_complete` / `/goal
+  complete` re-parse the file scoped to the session directory (pass + green
+  gate + zero P1 + fully proven required, each rejection names the missing
+  piece) and fall back to explicitly-tagged model-attested completion only
+  when the file is unreadable. Loop-mode gating is untouched.
 - Repo-graph orchestration (issue #4, Graph-aware goals milestone):
   `detectGraph` (agent/command registry first, `.opencode` fs fallback),
   `GoalRecord.graph` phase machine (`plan → work → verify → publish`, plus

@@ -25,8 +25,10 @@
  */
 
 import { formatGoal, formatGoalHistory, parseGoalCommand, type GoalCommand } from "./command"
-import { detectGraph, type GraphDetection } from "./detect"
+import { detectGraph } from "./detect"
 import { validateClearRequest, validateEvidence } from "./evidence"
+import { isPathInside } from "./permission"
+import { parseVerdict, readVerdictFile } from "./verdict"
 import { unmetDeps, resolveDepends, SOFT_NODE_WARN_COUNT, taskNumber, validateDepends } from "./graph"
 import { resolveOptions, type Options } from "./options"
 import { decidePermission } from "./permission"
@@ -118,7 +120,7 @@ export class GoalController {
       editor.add({
         name: "goal_complete",
         description:
-          "Mark the active goal complete. Only call this when the goal's finish condition is verifiably met. Evidence must be concrete, independently checkable, and grounded in this session's observed work (file, test result, or command output, at least 24 chars).",
+          "Mark the active goal complete. Only call this when the goal's finish condition is verifiably met. Evidence must be concrete, independently checkable, and grounded in this session's observed work (file, test result, or command output, at least 24 chars). In graph mode the evidence must cite the run's verdict.md, which is re-parsed (pass, green gate, zero P1, all nodes proven).",
         input: {
           type: "object",
           properties: {
@@ -405,6 +407,16 @@ export class GoalController {
           await this.notify(sessionID, `Completion rejected: ${rejection}`)
           return
         }
+        if (goal.graph?.mode === "graph") {
+          const gated = await this.validateGraphEvidence(evidence, goal, sessionID)
+          if (gated.rejection) {
+            await this.notify(sessionID, `Completion rejected: ${gated.rejection}`)
+            return
+          }
+          if (gated.unverified) {
+            await this.notify(sessionID, `Unverified completion (model-attested only: ${gated.unverified}).`)
+          }
+        }
         goal.status = "completed"
         goal.outcome = "completed"
         goal.evidence = evidence
@@ -512,11 +524,17 @@ export class GoalController {
     const transcript = await this.transcriptForEvidence(context.sessionID)
     const rejection = validateEvidence(evidence, transcript)
     if (rejection) return { content: rejection }
+    let suffix = ""
+    if (goal.graph?.mode === "graph") {
+      const gated = await this.validateGraphEvidence(evidence, goal, context.sessionID)
+      if (gated.rejection) return { content: gated.rejection }
+      if (gated.unverified) suffix = ` (unverified — model-attested only: ${gated.unverified})`
+    }
     goal.status = "completed"
     goal.outcome = "completed"
     goal.evidence = evidence
     await this.save(goal)
-    return { content: `Goal ${goal.id} completed. Evidence recorded.` }
+    return { content: `Goal ${goal.id} completed. Evidence recorded.${suffix}` }
   }
 
   async onGoalSet(input: Record<string, unknown>, context: ToolContext): Promise<{ content: string }> {
@@ -756,6 +774,70 @@ export class GoalController {
     } catch {
       return []
     }
+  }
+
+  /**
+   * Graph-mode completion gate (issue #6, verdict-only scope).
+   *
+   * Layers on top of the loop heuristic (which the caller already ran):
+   * the evidence must cite this run's verdict file; when the file is
+   * readable under the session directory it is parsed and must show
+   * `pass` + green gate + zero P1 + fully proven nodes. When it is not
+   * readable the loop gate stands alone and the downgrade is explicit.
+   */
+  private async validateGraphEvidence(
+    evidence: string,
+    goal: GoalRecord,
+    sessionID: string,
+  ): Promise<{ rejection?: string; unverified?: string }> {
+    const runId = goal.graph?.runId ?? ""
+    const expected = `.opencode/runs/${runId}/verdict.md`
+    const active = "The goal remains active."
+    if (!runId || !evidence.includes(runId)) {
+      return {
+        rejection:
+          `Goal NOT completed: graph-mode evidence must cite this run's verdict file (${expected || "unknown run"}). ${active}`,
+      }
+    }
+    const dir = await this.sessionDirectory(sessionID)
+    if (!dir) {
+      return { unverified: "no session directory, so verdict.md cannot be verified" }
+    }
+    const cited = /(^|\s)([^\s'"]*verdict\.md)/i.exec(evidence)?.[2]
+    const path = await import("node:path")
+    const candidate = !cited
+      ? path.join(dir, expected)
+      : path.isAbsolute(cited)
+        ? path.normalize(cited)
+        : path.join(dir, cited)
+    if (!isPathInside(candidate, dir)) {
+      return {
+        rejection:
+          `Denied by goals plugin: ${candidate} is outside the session working directory ${dir}. ` +
+          `Work inside the session directory, or call goal_block with a specific reason. ${active}`,
+      }
+    }
+    const read = await readVerdictFile(candidate)
+    if ("error" in read) {
+      return { unverified: `verdict.md not readable at ${candidate}` }
+    }
+    const parsed = parseVerdict(read.text)
+    if (!parsed.ok) {
+      return { rejection: `Goal NOT completed: verdict.md is unparsable (${parsed.error}). ${active}` }
+    }
+    if (parsed.verdict !== "pass") {
+      return { rejection: `Goal NOT completed: verdict is fail (gate: ${parsed.gate}). ${active}` }
+    }
+    if (!parsed.gateGreen) {
+      return { rejection: `Goal NOT completed: gate is red (${parsed.gate}). ${active}` }
+    }
+    if (parsed.p1 > 0) {
+      return { rejection: `Goal NOT completed: P1 count ${parsed.p1} is not zero. ${active}` }
+    }
+    if (parsed.unproven.length > 0) {
+      return { rejection: `Goal NOT completed: nodes not proven (${parsed.unproven.join(", ")}). ${active}` }
+    }
+    return {}
   }
 
   // ---- permission sandbox ---------------------------------------------------

@@ -36,7 +36,7 @@ Verbs have aliases: `status` (`view`), `done` (`complete`), `blocked` (`block`),
 | Tool | Gate |
 | --- | --- |
 | `goal_set(objective, turns?, tokens?, unbounded?, graph?)` | Refuses while a non-terminal goal exists — the model can't clobber yours, and cap defaults match `/goal set`. `graph` (issue number/URL) switches to orchestrator mode when a repo graph is detected. |
-| `goal_complete(evidence)` | Evidence ≥24 chars with a checkable anchor (path, number, test result), grounded in transcript tokens when history is available. Weak claims are rejected; the goal stays `active`. |
+| `goal_complete(evidence)` | Evidence ≥24 chars with a checkable anchor (path, number, test result), grounded in transcript tokens when history is available. In graph mode the evidence must cite the run's `verdict.md`, which is re-parsed (pass, green gate, zero P1, all nodes proven) or the completion is explicitly tagged unverified. Weak claims are rejected; the goal stays `active`. |
 | `goal_block(reason)` | Requires a specific reason; the sanctioned "I can't proceed" exit. |
 | `goal_clear(request)` | Must quote the user's own clearing ask, grounded against **non-assistant** transcript text — assistant prose can't launder it, and no transcript fails closed. |
 | `goal_add_task(title, depends?, acceptance?, verify?)` / `goal_update_task(ref, status, note?, evidence?)` | Statuses `todo`/`doing`/`done`/`blocked` (active goal required); `doing`/`done` need deps done first, past-7-nodes warns; the widget stays in sync. |
@@ -259,6 +259,7 @@ src/
   rpc.ts            # goals.get / goals.updated for the widget (import-free)
   tui.tsx           # sidebar progress widget source (pre-compiled to dist/tui.js, the ./tui export)
   evidence.ts       # completion-evidence gate + user-request gate for goal_clear
+  verdict.ts          # verdict.md parser + capped reads for graph-mode completion gating
   permission.ts     # path sandbox (decidePermission, fail-closed containment)
   options.ts        # plugin options (stallLimit, continuationText, defaultCapTurns/Tokens)
   types.ts          # structural slice of the plugin context
