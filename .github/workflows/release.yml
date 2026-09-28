@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22 # npm 10+ ships here; provenance needs npm >= 9
+          node-version: 24 # ships npm 11+; npm <11 never attempts the OIDC exchange (ENEEDAUTH)
 
       - name: Verify the tag matches package.json
         run: |
