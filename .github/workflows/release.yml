@@ -25,7 +25,7 @@ jobs:
         with:
           bun-version: latest
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24 # ships npm 11+; npm <11 never attempts the OIDC exchange (ENEEDAUTH)
 
